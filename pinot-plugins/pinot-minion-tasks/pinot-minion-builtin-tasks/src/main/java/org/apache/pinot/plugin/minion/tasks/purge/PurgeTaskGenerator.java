@@ -152,12 +152,4 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
     }
     return pinotTaskConfigs;
   }
-
-  /**
-   * Check if the segment is already purged
-   */
-  private boolean isPurgedSegment(SegmentZKMetadata segmentZKMetadata, String mergeLevel) {
-    Map<String, String> customMap = segmentZKMetadata.getCustomMap();
-    return customMap != null;
-  }
 }
