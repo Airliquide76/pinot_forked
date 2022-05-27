@@ -78,7 +78,6 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
       String deltaTimePeriod =
           taskConfigs.getOrDefault(MinionConstants.PurgeTask.LAST_PURGE_TIME_THREESOLD_PERIOD,
               MinionConstants.PurgeTask.DEFAULT_LAST_PURGE_TIME_THRESHOLD_PERIOD);
-      System.out.println(deltaTimePeriod);
       long purgeDeltaMs = TimeUtils.convertPeriodToMillis(deltaTimePeriod);
 
       LOGGER.info("Start generating task configs for table: {} for task: {}", tableName, taskType);
@@ -151,7 +150,6 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
       LOGGER.info("Finished generating {} tasks configs for table: {} " + "for task: {}", tableNumTasks, tableName,
           taskType);
     }
-    System.out.println(pinotTaskConfigs);
     return pinotTaskConfigs;
   }
 }
