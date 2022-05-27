@@ -28,8 +28,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
 import org.apache.pinot.common.data.Segment;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.controller.helix.core.minion.generator.BaseTaskGenerator;
@@ -48,7 +46,6 @@ import org.slf4j.LoggerFactory;
 @TaskGenerator
 public class PurgeTaskGenerator extends BaseTaskGenerator {
   private static final Logger LOGGER = LoggerFactory.getLogger(PurgeTaskGenerator.class);
-  private static final String DEFAULT_DELTA_PERIOD = "1d";
 
   @Override
   public String getTaskType() {
@@ -65,21 +62,23 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
 
       String tableName = tableConfig.getTableName();
       if (tableConfig.getTableType() == TableType.REALTIME) {
-        LOGGER.info("Task type : {}, cannot be run on table of type  {}", taskType, TableType.REALTIME);
+        LOGGER.warn("Skip generating task: {} for real-time table: {}", taskType, tableName);
         continue;
       }
 
       Map<String, String> taskConfigs;
-      try {
-        TableTaskConfig tableTaskConfig = tableConfig.getTaskConfig();
-        Preconditions.checkNotNull(tableTaskConfig);
-        taskConfigs = tableTaskConfig.getConfigsForTaskType(MinionConstants.PurgeTask.TASK_TYPE);
-        Preconditions.checkNotNull(taskConfigs, "Task config shouldn't be null for Table: {}", tableName);
-      } catch (Exception e) {
+      TableTaskConfig tableTaskConfig = tableConfig.getTaskConfig();
+      if (tableTaskConfig == null) {
+        LOGGER.warn("Failed to find task config for table: {}", tableName);
         continue;
       }
+      taskConfigs = tableTaskConfig.getConfigsForTaskType(MinionConstants.PurgeTask.TASK_TYPE);
+      Preconditions.checkNotNull(taskConfigs, "Task config shouldn't be null for Table: {}", tableName);
+
       String deltaTimePeriod =
-          taskConfigs.getOrDefault(MinionConstants.PurgeTask.DELTA_TIME_PERIOD_KEY, DEFAULT_DELTA_PERIOD);
+          taskConfigs.getOrDefault(MinionConstants.PurgeTask.LAST_PURGE_TIME_THREESOLD_PERIOD,
+              MinionConstants.PurgeTask.DEFAULT_LAST_PURGE_TIME_THRESHOLD_PERIOD);
+      System.out.println(deltaTimePeriod);
       long purgeDeltaMs = TimeUtils.convertPeriodToMillis(deltaTimePeriod);
 
       LOGGER.info("Start generating task configs for table: {} for task: {}", tableName, taskType);
@@ -97,16 +96,18 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
         tableMaxNumTasks = Integer.MAX_VALUE;
       }
       List<SegmentZKMetadata> offlineSegmentsZKMetadata = _clusterInfoAccessor.getSegmentsZKMetadata(tableName);
+      List<SegmentZKMetadata> purgedSegmentsZKMetadata = new ArrayList<>();
+      List<SegmentZKMetadata> notpurgedSegmentsZKMetadata = new ArrayList<>();
 
-      Predicate<SegmentZKMetadata> alreadyPurged = segment -> segment.getCustomMap() != null;
-      Predicate<SegmentZKMetadata> notPurged = segment -> segment.getCustomMap() == null;
+      for (SegmentZKMetadata segmentMetadata: offlineSegmentsZKMetadata) {
 
-      List<SegmentZKMetadata> purgedSegmentsZKMetadata =
-          offlineSegmentsZKMetadata.stream().filter(alreadyPurged).collect(Collectors.toList());
-
-      List<SegmentZKMetadata> notpurgedSegmentsZKMetadata =
-          offlineSegmentsZKMetadata.stream().filter(notPurged).collect(Collectors.toList());
-
+       if (segmentMetadata.getCustomMap() != null && segmentMetadata.getCustomMap().containsKey(
+           MinionConstants.PurgeTask.TASK_TYPE + MinionConstants.TASK_TIME_SUFFIX)) {
+         purgedSegmentsZKMetadata.add(segmentMetadata);
+       } else {
+         notpurgedSegmentsZKMetadata.add(segmentMetadata);
+       }
+      }
       Collections.sort(purgedSegmentsZKMetadata, Comparator.comparing(
           segmentZKMetadata -> segmentZKMetadata.getCustomMap()
               .get(MinionConstants.PurgeTask.TASK_TYPE + MinionConstants.TASK_TIME_SUFFIX),
@@ -150,6 +151,7 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
       LOGGER.info("Finished generating {} tasks configs for table: {} " + "for task: {}", tableNumTasks, tableName,
           taskType);
     }
+    System.out.println(pinotTaskConfigs);
     return pinotTaskConfigs;
   }
 }
