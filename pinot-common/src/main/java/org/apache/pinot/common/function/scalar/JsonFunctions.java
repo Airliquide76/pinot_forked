@@ -144,10 +144,11 @@ public class JsonFunctions {
   public static String jsonPathString(Object object, String jsonPath, String defaultValue) {
     try {
       Object jsonValue = jsonPath(object, jsonPath);
-      if (jsonValue instanceof String) {
+      if ((jsonValue instanceof String) && (!String.valueOf(jsonValue).isBlank())) {
         return (String) jsonValue;
       }
-      return jsonValue == null ? defaultValue : JsonUtils.objectToString(jsonValue);
+      return jsonValue == null || String.valueOf(jsonValue).isBlank()
+          ? defaultValue : JsonUtils.objectToString(jsonValue);
     } catch (Exception ignore) {
       return defaultValue;
     }
