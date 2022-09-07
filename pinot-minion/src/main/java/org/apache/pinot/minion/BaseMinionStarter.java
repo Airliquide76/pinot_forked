@@ -19,10 +19,15 @@
 package org.apache.pinot.minion;
 
 import com.google.common.base.Preconditions;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.regex.Pattern;
 import javax.net.ssl.SSLContext;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -43,6 +48,7 @@ import org.apache.pinot.common.utils.ServiceStatus;
 import org.apache.pinot.common.utils.TlsUtils;
 import org.apache.pinot.common.utils.fetcher.SegmentFetcherFactory;
 import org.apache.pinot.common.utils.helix.HelixHelper;
+import org.apache.pinot.core.minion.SegmentPurger;
 import org.apache.pinot.core.transport.ListenerConfig;
 import org.apache.pinot.core.util.ListenerConfigUtil;
 import org.apache.pinot.minion.event.EventObserverFactoryRegistry;
@@ -82,6 +88,7 @@ public abstract class BaseMinionStarter implements ServiceStartable {
   protected EventObserverFactoryRegistry _eventObserverFactoryRegistry;
   protected MinionAdminApiApplication _minionAdminApplication;
   protected List<ListenerConfig> _listenerConfigs;
+  private List<List<String>> _listToPurge;
 
   @Override
   public void init(PinotConfiguration config)
@@ -159,7 +166,29 @@ public abstract class BaseMinionStarter implements ServiceStartable {
     LOGGER.info("Starting Pinot minion: {}", _instanceId);
     Utils.logVersions();
     MinionContext minionContext = MinionContext.getInstance();
-
+    SegmentPurger.RecordPurgerFactory s = new SegmentPurger.RecordPurgerFactory() {
+      @Override
+      public SegmentPurger.RecordPurger getRecordPurger(String rawTableName) {
+        _listToPurge = getMapFromCSV(System.getenv("PURGE_LIST_FILE"));
+        LOGGER.info("J'ai bien lu la liste" + _listToPurge.toString());
+        SegmentPurger.RecordPurger r = row -> {
+          String contextTable = rawTableName.replace("_OFFLINE", "").replace("_REALTIME", "");
+          for (List<String> a : _listToPurge) {
+            if (a.get(0).equals(contextTable)) {
+              if (a.get(1).equals(row.getValue("meta.customer"))
+                  && (((a.get(2).equals("*"))
+                  || (a.get(2).equals(row.getValue("id")))))) {
+                return true;
+              }
+            }
+          }
+          return false;
+        };
+        return r;
+      }
+    };
+    minionContext.setRecordPurgerFactory(s);
+    LOGGER.info("Record Purger registered");
     // Initialize data directory
     LOGGER.info("Initializing data directory");
     File dataDir = new File(_config
@@ -280,6 +309,21 @@ public abstract class BaseMinionStarter implements ServiceStartable {
     });
 
     LOGGER.info("Pinot minion started");
+  }
+
+  public static List<List<String>> getMapFromCSV(final String filePath) {
+    List<List<String>> records = new ArrayList<>();
+    try (BufferedReader br = new BufferedReader(new FileReader(filePath))) {
+      String line;
+      while ((line = br.readLine()) != null) {
+        String[] values = line.split(Pattern.quote("|"));
+        records.add(Arrays.asList(values));
+      }
+      return records;
+    } catch (Exception e) {
+      LOGGER.error("Failed to parse purgeFile");
+      return null;
+    }
   }
 
   private void updateInstanceConfigIfNeeded() {
