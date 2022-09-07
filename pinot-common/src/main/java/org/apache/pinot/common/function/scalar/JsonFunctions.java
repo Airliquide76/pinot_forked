@@ -148,7 +148,8 @@ public class JsonFunctions {
       if (jsonValue instanceof String) {
         return (String) jsonValue;
       }
-      return jsonValue == null ? defaultValue : JsonUtils.objectToString(jsonValue);
+      return jsonValue == null || String.valueOf(jsonValue).isBlank()
+          ? defaultValue : JsonUtils.objectToString(jsonValue);
     } catch (Exception ignore) {
       return defaultValue;
     }
