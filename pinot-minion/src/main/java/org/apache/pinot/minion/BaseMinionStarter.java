@@ -95,6 +95,7 @@ public abstract class BaseMinionStarter implements ServiceStartable {
   private List<List<String>> _listToPurge;
   protected ExecutorService _executorService;
 
+
   @Override
   public void init(PinotConfiguration config)
       throws Exception {
@@ -174,14 +175,14 @@ public abstract class BaseMinionStarter implements ServiceStartable {
     LOGGER.info("Starting Pinot minion: {}", _instanceId);
     Utils.logVersions();
     MinionContext minionContext = MinionContext.getInstance();
-
     SegmentPurger.RecordPurgerFactory s = new SegmentPurger.RecordPurgerFactory() {
       @Override
       public SegmentPurger.RecordPurger getRecordPurger(String rawTableName) {
         _listToPurge = getMapFromCSV(System.getenv("PURGE_LIST_FILE"));
         LOGGER.info("J'ai bien lu la liste" + _listToPurge.toString());
         SegmentPurger.RecordPurger r = row -> {
-          String contextTable = rawTableName.replace("_OFFLINE", "");
+
+          String contextTable = rawTableName.replace("_OFFLINE", "").replace("_REALTIME", "");
           for (List<String> a : _listToPurge) {
             if (a.get(0).equals(contextTable)) {
               if (a.get(1).equals(row.getValue("meta.customer"))
@@ -197,6 +198,8 @@ public abstract class BaseMinionStarter implements ServiceStartable {
       }
     };
 
+    minionContext.setRecordPurgerFactory(s);
+    LOGGER.info("Record Purger registered");
     // Initialize data directory
     LOGGER.info("Initializing data directory");
     File dataDir = new File(_config
