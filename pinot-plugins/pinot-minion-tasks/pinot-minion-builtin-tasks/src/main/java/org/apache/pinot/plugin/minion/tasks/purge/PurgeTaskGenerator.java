@@ -62,14 +62,13 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
     for (TableConfig tableConfig : tableConfigs) {
 
       String tableName = tableConfig.getTableName();
-      List<SegmentZKMetadata> completedSegmentsZKMetadata = null;
+      List<SegmentZKMetadata> completedSegmentsZKMetadata = new ArrayList<>();
       if (tableConfig.getTableType() == TableType.REALTIME) {
         completedSegmentsZKMetadata = new ArrayList<>();
         Map<Integer, String> partitionToLatestLLCSegmentName = new HashMap<>();
         Set<Integer> allPartitions = new HashSet<>();
         getCompletedSegmentsInfo(tableName, completedSegmentsZKMetadata, partitionToLatestLLCSegmentName,
             allPartitions);
-        continue;
       }
 
       Map<String, String> taskConfigs;
@@ -100,7 +99,6 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
       } else {
         tableMaxNumTasks = Integer.MAX_VALUE;
       }
-
       List<SegmentZKMetadata> segmentsZKMetadata;
       if (tableConfig.getTableType() == TableType.REALTIME) {
         segmentsZKMetadata = completedSegmentsZKMetadata;
@@ -126,7 +124,6 @@ public class PurgeTaskGenerator extends BaseTaskGenerator {
           Comparator.nullsFirst(Comparator.naturalOrder())));
       //add already purged segment at the end
       notpurgedSegmentsZKMetadata.addAll(purgedSegmentsZKMetadata);
-
       int tableNumTasks = 0;
       Set<Segment> runningSegments =
           TaskGeneratorUtils.getRunningSegments(MinionConstants.PurgeTask.TASK_TYPE, _clusterInfoAccessor);
