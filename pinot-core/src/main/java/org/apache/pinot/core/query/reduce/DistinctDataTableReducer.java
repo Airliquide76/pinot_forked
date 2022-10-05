@@ -24,15 +24,17 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import org.apache.pinot.common.datatable.DataTable;
 import org.apache.pinot.common.metrics.BrokerMetrics;
 import org.apache.pinot.common.response.broker.BrokerResponseNative;
 import org.apache.pinot.common.response.broker.ResultTable;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
-import org.apache.pinot.common.utils.DataTable;
+import org.apache.pinot.core.common.ObjectSerDeUtils;
 import org.apache.pinot.core.data.table.Record;
 import org.apache.pinot.core.query.aggregation.function.DistinctAggregationFunction;
 import org.apache.pinot.core.query.distinct.DistinctTable;
+import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.core.transport.ServerRoutingInstance;
 
 
@@ -41,9 +43,11 @@ import org.apache.pinot.core.transport.ServerRoutingInstance;
  */
 public class DistinctDataTableReducer implements DataTableReducer {
   private final DistinctAggregationFunction _distinctAggregationFunction;
+  private final QueryContext _queryContext;
 
-  DistinctDataTableReducer(DistinctAggregationFunction distinctAggregationFunction) {
+  DistinctDataTableReducer(DistinctAggregationFunction distinctAggregationFunction, QueryContext queryContext) {
     _distinctAggregationFunction = distinctAggregationFunction;
+    _queryContext = queryContext;
   }
 
   /**
@@ -63,7 +67,9 @@ public class DistinctDataTableReducer implements DataTableReducer {
     // Gather all non-empty DistinctTables
     List<DistinctTable> nonEmptyDistinctTables = new ArrayList<>(dataTableMap.size());
     for (DataTable dataTable : dataTableMap.values()) {
-      DistinctTable distinctTable = dataTable.getObject(0, 0);
+      DataTable.CustomObject customObject = dataTable.getCustomObject(0, 0);
+      assert customObject != null;
+      DistinctTable distinctTable = ObjectSerDeUtils.deserialize(customObject);
       if (!distinctTable.isEmpty()) {
         nonEmptyDistinctTables.add(distinctTable);
       }
@@ -83,7 +89,8 @@ public class DistinctDataTableReducer implements DataTableReducer {
     } else {
       // Construct a main DistinctTable and merge all non-empty DistinctTables into it
       DistinctTable mainDistinctTable = new DistinctTable(nonEmptyDistinctTables.get(0).getDataSchema(),
-          _distinctAggregationFunction.getOrderByExpressions(), _distinctAggregationFunction.getLimit());
+          _distinctAggregationFunction.getOrderByExpressions(), _distinctAggregationFunction.getLimit(),
+          _queryContext.isNullHandlingEnabled());
       for (DistinctTable distinctTable : nonEmptyDistinctTables) {
         mainDistinctTable.mergeTable(distinctTable);
       }
@@ -101,7 +108,10 @@ public class DistinctDataTableReducer implements DataTableReducer {
       Object[] values = iterator.next().getValues();
       Object[] row = new Object[numColumns];
       for (int i = 0; i < numColumns; i++) {
-        row[i] = columnDataTypes[i].convertAndFormat(values[i]);
+        Object value = values[i];
+        if (value != null) {
+          row[i] = columnDataTypes[i].convertAndFormat(value);
+        }
       }
       rows.add(row);
     }

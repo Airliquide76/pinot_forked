@@ -86,7 +86,7 @@ public abstract class BaseImmutableDictionary implements Dictionary {
   }
 
   protected final int normalizeIndex(int index) {
-    return (index >= 0) ? index : Dictionary.NULL_VALUE_INDEX;
+    return index >= 0 ? index : NULL_VALUE_INDEX;
   }
 
   @Override
@@ -305,6 +305,10 @@ public abstract class BaseImmutableDictionary implements Dictionary {
 
   protected BigDecimal getBigDecimal(int dictId) {
     return _valueReader.getBigDecimal(dictId, _numBytesPerValue);
+  }
+
+  protected byte[] getUnpaddedBytes(int dictId, byte[] buffer) {
+    return _valueReader.getUnpaddedBytes(dictId, _numBytesPerValue, _paddingByte, buffer);
   }
 
   protected String getUnpaddedString(int dictId, byte[] buffer) {

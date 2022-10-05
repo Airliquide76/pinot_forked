@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.apache.pinot.spi.config.table.CompletionConfig;
+import org.apache.pinot.spi.config.table.DedupConfig;
 import org.apache.pinot.spi.config.table.FieldConfig;
 import org.apache.pinot.spi.config.table.IndexingConfig;
 import org.apache.pinot.spi.config.table.QueryConfig;
@@ -43,6 +44,7 @@ import org.apache.pinot.spi.config.table.TunerConfig;
 import org.apache.pinot.spi.config.table.UpsertConfig;
 import org.apache.pinot.spi.config.table.assignment.InstanceAssignmentConfig;
 import org.apache.pinot.spi.config.table.assignment.InstancePartitionsType;
+import org.apache.pinot.spi.config.table.assignment.SegmentAssignmentConfig;
 import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
 
 
@@ -107,9 +109,12 @@ public class TableConfigBuilder {
   private RoutingConfig _routingConfig;
   private QueryConfig _queryConfig;
   private Map<InstancePartitionsType, InstanceAssignmentConfig> _instanceAssignmentConfigMap;
+  private Map<InstancePartitionsType, String> _instancePartitionsMap;
+  private Map<String, SegmentAssignmentConfig> _segmentAssignmentConfigMap;
   private List<FieldConfig> _fieldConfigList;
 
   private UpsertConfig _upsertConfig;
+  private DedupConfig _dedupConfig;
   private IngestionConfig _ingestionConfig;
   private List<TierConfig> _tierConfigList;
   private List<TunerConfig> _tunerConfigList;
@@ -347,6 +352,11 @@ public class TableConfigBuilder {
     return this;
   }
 
+  public TableConfigBuilder setDedupConfig(DedupConfig dedupConfig) {
+    _dedupConfig = dedupConfig;
+    return this;
+  }
+
   public TableConfigBuilder setPeerSegmentDownloadScheme(String peerSegmentDownloadScheme) {
     _peerSegmentDownloadScheme = peerSegmentDownloadScheme;
     return this;
@@ -364,6 +374,17 @@ public class TableConfigBuilder {
 
   public TableConfigBuilder setTunerConfigList(List<TunerConfig> tunerConfigList) {
     _tunerConfigList = tunerConfigList;
+    return this;
+  }
+
+  public TableConfigBuilder setInstancePartitionsMap(Map<InstancePartitionsType, String> instancePartitionsMap) {
+    _instancePartitionsMap = instancePartitionsMap;
+    return this;
+  }
+
+  public TableConfigBuilder setSegmentAssignmentConfigMap(
+      Map<String, SegmentAssignmentConfig> segmentAssignmentConfigMap) {
+    _segmentAssignmentConfigMap = segmentAssignmentConfigMap;
     return this;
   }
 
@@ -418,6 +439,7 @@ public class TableConfigBuilder {
 
     return new TableConfig(_tableName, _tableType.toString(), validationConfig, tenantConfig, indexingConfig,
         _customConfig, _quotaConfig, _taskConfig, _routingConfig, _queryConfig, _instanceAssignmentConfigMap,
-        _fieldConfigList, _upsertConfig, _ingestionConfig, _tierConfigList, _isDimTable, _tunerConfigList);
+        _fieldConfigList, _upsertConfig, _dedupConfig, _ingestionConfig, _tierConfigList, _isDimTable, _tunerConfigList,
+        _instancePartitionsMap, _segmentAssignmentConfigMap);
   }
 }

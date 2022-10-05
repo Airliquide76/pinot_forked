@@ -25,8 +25,8 @@ import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.commons.io.FileUtils;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.task.TaskState;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.minion.MinionTaskMetadataUtils;
 import org.apache.pinot.common.minion.RealtimeToOfflineSegmentsTaskMetadata;
@@ -211,7 +211,7 @@ public class RealtimeToOfflineSegmentsMinionClusterIntegrationTest extends Realt
 
   @Test(enabled = false)
   @Override
-  public void testGeneratedQueriesWithMultiValues() {
+  public void testGeneratedQueries() {
   }
 
   @Test(enabled = false)

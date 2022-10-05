@@ -25,12 +25,14 @@ import com.google.common.base.Preconditions;
 import javax.annotation.Nullable;
 import org.apache.pinot.spi.utils.EqualityUtils;
 
-
 @SuppressWarnings("unused")
 @JsonIgnoreProperties(ignoreUnknown = true)
 public final class DateTimeFieldSpec extends FieldSpec {
   private String _format;
   private String _granularity;
+  private Object _sampleValue;
+  private transient DateTimeFormatSpec _formatSpec;
+  private transient DateTimeGranularitySpec _granularitySpec;
 
   public enum TimeFormat {
     EPOCH, TIMESTAMP, SIMPLE_DATE_FORMAT
@@ -68,15 +70,19 @@ public final class DateTimeFieldSpec extends FieldSpec {
    *       2) if a time column is defined in hoursSinceEpoch (format=1:HOURS:EPOCH), and the data buckets are 1 hours,
    *          the granularity will be 1:HOURS
    */
-  public DateTimeFieldSpec(String name, DataType dataType, String format, String granularity) {
+  public DateTimeFieldSpec(String name, DataType dataType, String format, String granularity,
+      @Nullable Object sampleValue) {
     super(name, dataType, true);
-    Preconditions.checkNotNull(name);
-    Preconditions.checkNotNull(dataType);
-    DateTimeFormatSpec.validateFormat(format);
-    DateTimeGranularitySpec.validateGranularity(granularity);
 
     _format = format;
     _granularity = granularity;
+    _formatSpec = new DateTimeFormatSpec(format);
+    _granularitySpec = new DateTimeGranularitySpec(granularity);
+    _sampleValue = sampleValue;
+  }
+
+  public DateTimeFieldSpec(String name, DataType dataType, String format, String granularity) {
+    this(name, dataType, format, granularity, null);
   }
 
   /**
@@ -86,7 +92,17 @@ public final class DateTimeFieldSpec extends FieldSpec {
    */
   public DateTimeFieldSpec(String name, DataType dataType, String format, String granularity,
       @Nullable Object defaultNullValue, @Nullable String transformFunction) {
-    this(name, dataType, format, granularity);
+    this(name, dataType, format, granularity, defaultNullValue, transformFunction, null);
+  }
+
+  /**
+   * Constructs a DateTimeFieldSpec with basic fields - name, dataType, format, granularity - and also with
+   * defaultNullValue and
+   * transformFunction
+   */
+  public DateTimeFieldSpec(String name, DataType dataType, String format, String granularity,
+      @Nullable Object defaultNullValue, @Nullable String transformFunction, @Nullable String sampleValue) {
+    this(name, dataType, format, granularity, sampleValue);
     setDefaultNullValue(defaultNullValue);
     setTransformFunction(transformFunction);
   }
@@ -112,6 +128,17 @@ public final class DateTimeFieldSpec extends FieldSpec {
     _format = format;
   }
 
+  @JsonIgnore
+  public DateTimeFormatSpec getFormatSpec() {
+    DateTimeFormatSpec formatSpec = _formatSpec;
+    if (formatSpec == null) {
+      formatSpec = new DateTimeFormatSpec(_format);
+      _formatSpec = formatSpec;
+    }
+
+    return formatSpec;
+  }
+
   public String getGranularity() {
     return _granularity;
   }
@@ -119,6 +146,24 @@ public final class DateTimeFieldSpec extends FieldSpec {
   // Required by JSON de-serializer. DO NOT REMOVE.
   public void setGranularity(String granularity) {
     _granularity = granularity;
+  }
+
+  public Object getSampleValue() {
+    return _sampleValue;
+  }
+
+  public void setSampleValue(String sampleValue) {
+    _sampleValue = sampleValue;
+  }
+
+  @JsonIgnore
+  public DateTimeGranularitySpec getGranularitySpec() {
+    DateTimeGranularitySpec granularitySpec = _granularitySpec;
+    if (granularitySpec == null) {
+      granularitySpec = new DateTimeGranularitySpec(_granularity);
+      _granularitySpec = granularitySpec;
+    }
+    return granularitySpec;
   }
 
   @Override
@@ -142,13 +187,15 @@ public final class DateTimeFieldSpec extends FieldSpec {
     }
 
     DateTimeFieldSpec that = (DateTimeFieldSpec) o;
-    return EqualityUtils.isEqual(_format, that._format) && EqualityUtils.isEqual(_granularity, that._granularity);
+    return EqualityUtils.isEqual(_format, that._format) && EqualityUtils.isEqual(_granularity, that._granularity)
+        && EqualityUtils.isEqual(_sampleValue, that._sampleValue);
   }
 
   @Override
   public int hashCode() {
     int result = EqualityUtils.hashCodeOf(super.hashCode(), _format);
     result = EqualityUtils.hashCodeOf(result, _granularity);
+    result = EqualityUtils.hashCodeOf(result, _sampleValue);
     return result;
   }
 }

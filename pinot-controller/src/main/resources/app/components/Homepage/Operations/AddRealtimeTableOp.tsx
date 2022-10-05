@@ -31,7 +31,7 @@ import AddIndexingComponent from './AddIndexingComponent';
 import AddPartionComponent from './AddPartionComponent';
 import AddStorageComponent from './AddStorageComponent';
 import AddQueryComponent from './AddQueryComponent';
-import _ from 'lodash';
+import { isEmpty, isArray } from 'lodash';
 import AddRealTimeIngestionComponent from './AddRealTimeIngestionComponent';
 import AddRealTimePartionComponent from './AddRealTimePartionComponent';
 
@@ -101,7 +101,7 @@ const defaultTableObj = {
       "stream.kafka.decoder.class.name": "org.apache.pinot.plugin.stream.kafka.KafkaJSONMessageDecoder",
       "realtime.segment.flush.threshold.rows": "0",
       "realtime.segment.flush.threshold.time": "24h",
-      "realtime.segment.flush.segment.size": "100M"
+      "realtime.segment.flush.threshold.segment.size": "100M"
     }
   },
   "metadata": {},
@@ -181,10 +181,10 @@ export default function AddRealtimeTableOp({
 
   const returnValue = (data,key) =>{
     Object.keys(data).map(async (o)=>{
-    if(!_.isEmpty(data[o]) && typeof data[o] === "object"){
+    if(!isEmpty(data[o]) && typeof data[o] === "object"){
         await returnValue(data[o],key);
       }
-      else if(!_.isEmpty(data[o]) && _.isArray(data[o])){
+      else if(!isEmpty(data[o]) && isArray(data[o])){
         data[o].map(async (obj)=>{
           await returnValue(obj,key);
         })
@@ -252,7 +252,7 @@ const checkFields = (tableObj,fields) => {
 
   useEffect(()=>{
     let columnName = [];
-    if(!_.isEmpty(schemaObj)){
+    if(!isEmpty(schemaObj)){
       tableNamekey.map((o)=>{
         schemaObj[o] && schemaObj[o].map((obj)=>{
           columnName.push(obj.name);

@@ -20,7 +20,8 @@ package org.apache.pinot.segment.local.segment.index.readers;
 
 import java.math.BigDecimal;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
-import org.apache.pinot.spi.utils.BytesUtils;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 
 /**
@@ -28,15 +29,22 @@ import org.apache.pinot.spi.utils.BytesUtils;
  */
 public class ConstantValueStringDictionary extends BaseImmutableDictionary {
   private final String _value;
+  private final byte[] _bytes;
 
   public ConstantValueStringDictionary(String value) {
     super(1);
     _value = value;
+    _bytes = value.getBytes(UTF_8);
   }
 
   @Override
   public DataType getValueType() {
     return DataType.STRING;
+  }
+
+  @Override
+  public int indexOf(String stringValue) {
+    return stringValue.equals(_value) ? 0 : NULL_VALUE_INDEX;
   }
 
   @Override
@@ -103,6 +111,6 @@ public class ConstantValueStringDictionary extends BaseImmutableDictionary {
 
   @Override
   public byte[] getBytesValue(int dictId) {
-    return BytesUtils.toBytes(_value);
+    return _bytes;
   }
 }

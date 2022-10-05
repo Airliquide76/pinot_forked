@@ -21,7 +21,7 @@ import React, { useEffect, useState } from 'react';
 import { createStyles, FormControl, Grid, Input, InputLabel, makeStyles, MenuItem, Select, Theme, Tooltip} from '@material-ui/core';
 import AddDeleteComponent from './AddDeleteComponent';
 import MultipleSelectComponent from './MultipleSelectComponent';
-import _ from 'lodash';
+import { isEmpty } from 'lodash';
 
 const useStyles = makeStyles((theme: Theme) =>
   createStyles({
@@ -81,7 +81,7 @@ export default function AddRealTimeIngestionComponent({
 
   useEffect(()=>{
     let newTableObj = {...tableObj};
-      if(newTableObj.tableType === "REALTIME" && !newTableObj.tableIndexConfig.streamConfigs && _.isEmpty(newTableObj.tableIndexConfig.streamConfigs) ){
+      if(newTableObj.tableType === "REALTIME" && !newTableObj.tableIndexConfig.streamConfigs && isEmpty(newTableObj.tableIndexConfig.streamConfigs) ){
         newTableObj.tableIndexConfig.streamConfigs =
         {
             "streamType": "kafka",
@@ -93,7 +93,7 @@ export default function AddRealTimeIngestionComponent({
             "stream.kafka.decoder.class.name":"org.apache.pinot.plugin.stream.kafka.KafkaJSONMessageDecoder",
             "realtime.segment.flush.threshold.rows": "0",
             "realtime.segment.flush.threshold.time": "24h",
-            "realtime.segment.flush.segment.size": "100M"
+            "realtime.segment.flush.threshold.segment.size": "100M"
         }
         setTableObj(newTableObj);
       }else if(newTableObj.tableType !== "REALTIME" && newTableObj.tableIndexConfig.streamConfigs){

@@ -19,8 +19,12 @@
 package org.apache.pinot.controller.api.resources;
 
 import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiKeyAuthDefinition;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
+import io.swagger.annotations.Authorization;
+import io.swagger.annotations.SecurityDefinition;
+import io.swagger.annotations.SwaggerDefinition;
 import java.util.List;
 import javax.inject.Inject;
 import javax.ws.rs.GET;
@@ -28,16 +32,20 @@ import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.core.periodictask.PeriodicTaskScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
 
-@Api(tags = Constants.PERIODIC_TASK_TAG)
+
+@Api(tags = Constants.PERIODIC_TASK_TAG, authorizations = {@Authorization(value = SWAGGER_AUTHORIZATION_KEY)})
+@SwaggerDefinition(securityDefinition = @SecurityDefinition(apiKeyAuthDefinitions = @ApiKeyAuthDefinition(name =
+    HttpHeaders.AUTHORIZATION, in = ApiKeyAuthDefinition.ApiKeyLocation.HEADER, key = SWAGGER_AUTHORIZATION_KEY)))
 @Path("/periodictask")
 public class PinotControllerPeriodicTaskRestletResource {
 
@@ -53,7 +61,7 @@ public class PinotControllerPeriodicTaskRestletResource {
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/run")
   @ApiOperation(value = "Run periodic task against table. If table name is missing, task will run against all tables.")
-  public String runPeriodicTask(
+  public Response runPeriodicTask(
       @ApiParam(value = "Periodic task name", required = true) @QueryParam("taskname") String periodicTaskName,
       @ApiParam(value = "Name of the table") @QueryParam("tableName") String tableName,
       @ApiParam(value = "OFFLINE | REALTIME") @QueryParam("type") String tableType) {
@@ -78,11 +86,9 @@ public class PinotControllerPeriodicTaskRestletResource {
       tableName = matchingTableNamesWithType.get(0);
     }
 
-    Pair<String, Integer> taskExecutionDetails = _pinotHelixResourceManager
-        .invokeControllerPeriodicTask(tableName, periodicTaskName, null);
-
-    return "{\"Log Request Id\": \"" + taskExecutionDetails.getLeft()
-        + "\",\"Controllers notified\":" + (taskExecutionDetails.getRight() > 0) + "}";
+    return Response.ok()
+        .entity(_pinotHelixResourceManager.invokeControllerPeriodicTask(tableName, periodicTaskName, null))
+        .build();
   }
 
   @GET

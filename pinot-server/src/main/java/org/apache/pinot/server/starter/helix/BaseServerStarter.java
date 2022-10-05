@@ -38,7 +38,6 @@ import org.apache.helix.HelixManager;
 import org.apache.helix.HelixManagerFactory;
 import org.apache.helix.InstanceType;
 import org.apache.helix.SystemPropertyKeys;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.manager.zk.ZKHelixAdmin;
 import org.apache.helix.model.ExternalView;
 import org.apache.helix.model.HelixConfigScope;
@@ -48,11 +47,13 @@ import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.model.Message;
 import org.apache.helix.model.builder.HelixConfigScopeBuilder;
 import org.apache.helix.participant.statemachine.StateModelFactory;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.config.TlsConfig;
 import org.apache.pinot.common.metadata.ZKMetadataProvider;
 import org.apache.pinot.common.metrics.ServerMeter;
 import org.apache.pinot.common.metrics.ServerMetrics;
+import org.apache.pinot.common.request.context.ThreadTimer;
 import org.apache.pinot.common.restlet.resources.SystemResourceInfo;
 import org.apache.pinot.common.utils.ServiceStartableUtils;
 import org.apache.pinot.common.utils.ServiceStatus;
@@ -61,10 +62,9 @@ import org.apache.pinot.common.utils.TlsUtils;
 import org.apache.pinot.common.utils.config.TagNameUtils;
 import org.apache.pinot.common.utils.fetcher.SegmentFetcherFactory;
 import org.apache.pinot.common.utils.helix.HelixHelper;
-import org.apache.pinot.core.common.datatable.DataTableBuilder;
+import org.apache.pinot.core.common.datatable.DataTableBuilderFactory;
 import org.apache.pinot.core.data.manager.InstanceDataManager;
 import org.apache.pinot.core.data.manager.realtime.RealtimeConsumptionRateManager;
-import org.apache.pinot.core.query.request.context.ThreadTimer;
 import org.apache.pinot.core.transport.ListenerConfig;
 import org.apache.pinot.core.util.ListenerConfigUtil;
 import org.apache.pinot.segment.local.realtime.impl.invertedindex.RealtimeLuceneIndexRefreshState;
@@ -180,8 +180,14 @@ public abstract class BaseServerStarter implements ServiceStartable {
             Server.DEFAULT_ENABLE_THREAD_CPU_TIME_MEASUREMENT));
 
     // Set data table version send to broker.
-    DataTableBuilder.setCurrentDataTableVersion(_serverConf.getProperty(Server.CONFIG_OF_CURRENT_DATA_TABLE_VERSION,
-        Server.DEFAULT_CURRENT_DATA_TABLE_VERSION));
+    int dataTableVersion =
+        _serverConf.getProperty(Server.CONFIG_OF_CURRENT_DATA_TABLE_VERSION, DataTableBuilderFactory.DEFAULT_VERSION);
+    if (dataTableVersion > DataTableBuilderFactory.DEFAULT_VERSION) {
+      LOGGER.warn("Setting experimental DataTable version newer than default via config could result in"
+          + " backward-compatibility issues. Current default DataTable version: "
+          + DataTableBuilderFactory.DEFAULT_VERSION);
+    }
+    DataTableBuilderFactory.setDataTableVersion(dataTableVersion);
 
     LOGGER.info("Initializing Helix manager with zkAddress: {}, clusterName: {}, instanceId: {}", _zkAddress,
         _helixClusterName, _instanceId);
@@ -230,12 +236,22 @@ public abstract class BaseServerStarter implements ServiceStartable {
     boolean isOffsetBasedConsumptionStatusCheckerEnabled =
         _serverConf.getProperty(Server.CONFIG_OF_ENABLE_REALTIME_OFFSET_BASED_CONSUMPTION_STATUS_CHECKER,
             Server.DEFAULT_ENABLE_REALTIME_OFFSET_BASED_CONSUMPTION_STATUS_CHECKER);
+    boolean isFreshnessStatusCheckerEnabled =
+        _serverConf.getProperty(Server.CONFIG_OF_ENABLE_REALTIME_FRESHNESS_BASED_CONSUMPTION_STATUS_CHECKER,
+            Server.DEFAULT_ENABLE_REALTIME_FRESHNESS_BASED_CONSUMPTION_STATUS_CHECKER);
+    int realtimeMinFreshnessMs = _serverConf.getProperty(Server.CONFIG_OF_STARTUP_REALTIME_MIN_FRESHNESS_MS,
+        Server.DEFAULT_STARTUP_REALTIME_MIN_FRESHNESS_MS);
 
     // collect all resources which have this instance in the ideal state
     List<String> resourcesToMonitor = new ArrayList<>();
 
     Set<String> consumingSegments = new HashSet<>();
     boolean checkRealtime = realtimeConsumptionCatchupWaitMs > 0;
+    if (isFreshnessStatusCheckerEnabled && realtimeMinFreshnessMs <= 0) {
+      LOGGER.warn("Realtime min freshness {} must be > 0. Setting relatime min freshness to default {}.",
+          realtimeMinFreshnessMs, Server.DEFAULT_STARTUP_REALTIME_MIN_FRESHNESS_MS);
+      realtimeMinFreshnessMs = Server.DEFAULT_STARTUP_REALTIME_MIN_FRESHNESS_MS;
+    }
 
     for (String resourceName : _helixAdmin.getResourcesInCluster(_helixClusterName)) {
       // Only monitor table resources
@@ -274,16 +290,34 @@ public abstract class BaseServerStarter implements ServiceStartable {
             _instanceId, resourcesToMonitor, minResourcePercentForStartup));
     boolean foundConsuming = !consumingSegments.isEmpty();
     if (checkRealtime && foundConsuming) {
-      Supplier<Integer> getNumConsumingSegmentsNotReachedTheirLatestOffset = null;
-      if (isOffsetBasedConsumptionStatusCheckerEnabled) {
+      // We specifically put the freshness based checker first to ensure it's the only one setup if both checkers
+      // are accidentally enabled together. The freshness based checker is a stricter version of the offset based
+      // checker. But in the end, both checkers are bounded in time by realtimeConsumptionCatchupWaitMs.
+      if (isFreshnessStatusCheckerEnabled) {
+        LOGGER.info("Setting up freshness based status checker");
+        FreshnessBasedConsumptionStatusChecker freshnessStatusChecker =
+            new FreshnessBasedConsumptionStatusChecker(_serverInstance.getInstanceDataManager(), consumingSegments,
+                realtimeMinFreshnessMs);
+        Supplier<Integer> getNumConsumingSegmentsNotReachedMinFreshness =
+            freshnessStatusChecker::getNumConsumingSegmentsNotReachedIngestionCriteria;
+        serviceStatusCallbackListBuilder.add(
+            new ServiceStatus.RealtimeConsumptionCatchupServiceStatusCallback(_helixManager, _helixClusterName,
+                _instanceId, realtimeConsumptionCatchupWaitMs, getNumConsumingSegmentsNotReachedMinFreshness));
+      } else if (isOffsetBasedConsumptionStatusCheckerEnabled) {
+        LOGGER.info("Setting up offset based status checker");
         OffsetBasedConsumptionStatusChecker consumptionStatusChecker =
             new OffsetBasedConsumptionStatusChecker(_serverInstance.getInstanceDataManager(), consumingSegments);
-        getNumConsumingSegmentsNotReachedTheirLatestOffset =
-            consumptionStatusChecker::getNumConsumingSegmentsNotReachedTheirLatestOffset;
+        Supplier<Integer> getNumConsumingSegmentsNotReachedTheirLatestOffset =
+            consumptionStatusChecker::getNumConsumingSegmentsNotReachedIngestionCriteria;
+        serviceStatusCallbackListBuilder.add(
+            new ServiceStatus.RealtimeConsumptionCatchupServiceStatusCallback(_helixManager, _helixClusterName,
+                _instanceId, realtimeConsumptionCatchupWaitMs, getNumConsumingSegmentsNotReachedTheirLatestOffset));
+      } else {
+        LOGGER.info("Setting up static time based status checker");
+        serviceStatusCallbackListBuilder.add(
+            new ServiceStatus.RealtimeConsumptionCatchupServiceStatusCallback(_helixManager, _helixClusterName,
+                _instanceId, realtimeConsumptionCatchupWaitMs, null));
       }
-      serviceStatusCallbackListBuilder.add(
-          new ServiceStatus.RealtimeConsumptionCatchupServiceStatusCallback(_helixManager, _helixClusterName,
-              _instanceId, realtimeConsumptionCatchupWaitMs, getNumConsumingSegmentsNotReachedTheirLatestOffset));
     }
     LOGGER.info("Registering service status handler");
     ServiceStatus.setServiceStatusCallback(_instanceId,
@@ -304,6 +338,9 @@ public abstract class BaseServerStarter implements ServiceStartable {
         return Collections.singletonList(Helix.UNTAGGED_SERVER_INSTANCE);
       }
     });
+
+    // Remove disabled partitions
+    updated |= HelixHelper.removeDisabledPartitions(instanceConfig);
 
     // Update admin HTTP/HTTPS port
     int adminHttpPort = Integer.MIN_VALUE;
@@ -329,6 +366,14 @@ public abstract class BaseServerStarter implements ServiceStartable {
     int grpcPort = serverConf.isEnableGrpcServer() ? serverConf.getGrpcPort() : Integer.MIN_VALUE;
     updated |= updatePortIfNeeded(simpleFields, Instance.GRPC_PORT_KEY, grpcPort);
 
+    // Update multi-stage query engine ports
+    if (serverConf.isMultiStageServerEnabled()) {
+      updated |= updatePortIfNeeded(simpleFields, Instance.MULTI_STAGE_QUERY_ENGINE_SERVICE_PORT_KEY,
+          serverConf.getMultiStageServicePort());
+      updated |= updatePortIfNeeded(simpleFields, Instance.MULTI_STAGE_QUERY_ENGINE_MAILBOX_PORT_KEY,
+          serverConf.getMultiStageMailboxPort());
+    }
+
     // Update environment properties
     if (_pinotEnvironmentProvider != null) {
       // Retrieve failure domain information and add to the environment properties map
@@ -343,10 +388,21 @@ public abstract class BaseServerStarter implements ServiceStartable {
     }
 
     // Update system resource info (CPU, memory, etc)
-    Map<String, String> systemResourceInfoMap = new SystemResourceInfo().toMap();
-    if (!systemResourceInfoMap.equals(znRecord.getMapField(Instance.SYSTEM_RESOURCE_INFO_KEY))) {
-      LOGGER.info("Updating instance: {} with system resource info: {}", _instanceId, systemResourceInfoMap);
-      znRecord.setMapField(Instance.SYSTEM_RESOURCE_INFO_KEY, systemResourceInfoMap);
+    Map<String, String> newSystemResourceInfoMap = new SystemResourceInfo().toMap();
+    Map<String, String> existingSystemResourceInfoMap =
+        znRecord.getMapField(CommonConstants.Helix.Instance.SYSTEM_RESOURCE_INFO_KEY);
+    if (!newSystemResourceInfoMap.equals(existingSystemResourceInfoMap)) {
+      LOGGER.info("Updating instance: {} with new system resource info: {}", _instanceId, newSystemResourceInfoMap);
+      if (existingSystemResourceInfoMap == null) {
+        existingSystemResourceInfoMap = newSystemResourceInfoMap;
+      } else {
+        // existingSystemResourceInfoMap may contains more KV pairs than newSystemResourceInfoMap,
+        // we need to preserve those KV pairs and only update the different values.
+        for (Map.Entry<String, String> entry : newSystemResourceInfoMap.entrySet()) {
+          existingSystemResourceInfoMap.put(entry.getKey(), entry.getValue());
+        }
+      }
+      znRecord.setMapField(Instance.SYSTEM_RESOURCE_INFO_KEY, existingSystemResourceInfoMap);
       updated = true;
     }
 

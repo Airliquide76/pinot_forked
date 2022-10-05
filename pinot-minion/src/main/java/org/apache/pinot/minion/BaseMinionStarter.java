@@ -20,6 +20,7 @@ package org.apache.pinot.minion;
 
 import com.google.common.base.Preconditions;
 import java.io.BufferedReader;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
@@ -28,6 +29,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.net.ssl.SSLContext;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -38,6 +41,7 @@ import org.apache.helix.manager.zk.ZKHelixManager;
 import org.apache.helix.model.InstanceConfig;
 import org.apache.helix.task.TaskStateModelFactory;
 import org.apache.pinot.common.Utils;
+import org.apache.pinot.common.auth.AuthProviderUtils;
 import org.apache.pinot.common.config.TlsConfig;
 import org.apache.pinot.common.metrics.MinionMeter;
 import org.apache.pinot.common.metrics.MinionMetrics;
@@ -52,6 +56,7 @@ import org.apache.pinot.core.transport.ListenerConfig;
 import org.apache.pinot.core.util.ListenerConfigUtil;
 import org.apache.pinot.minion.event.EventObserverFactoryRegistry;
 import org.apache.pinot.minion.event.MinionEventObserverFactory;
+import org.apache.pinot.minion.event.MinionEventObservers;
 import org.apache.pinot.minion.executor.MinionTaskZkMetadataManager;
 import org.apache.pinot.minion.executor.PinotTaskExecutorFactory;
 import org.apache.pinot.minion.executor.TaskExecutorFactoryRegistry;
@@ -88,6 +93,7 @@ public abstract class BaseMinionStarter implements ServiceStartable {
   protected MinionAdminApiApplication _minionAdminApplication;
   protected List<ListenerConfig> _listenerConfigs;
   private List<List<String>> _listToPurge;
+  protected ExecutorService _executorService;
 
   @Override
   public void init(PinotConfiguration config)
@@ -113,6 +119,9 @@ public abstract class BaseMinionStarter implements ServiceStartable {
     MinionTaskZkMetadataManager minionTaskZkMetadataManager = new MinionTaskZkMetadataManager(_helixManager);
     _taskExecutorFactoryRegistry = new TaskExecutorFactoryRegistry(minionTaskZkMetadataManager, _config);
     _eventObserverFactoryRegistry = new EventObserverFactoryRegistry(minionTaskZkMetadataManager);
+    _executorService =
+        Executors.newCachedThreadPool(new ThreadFactoryBuilder().setNameFormat("async-task-thread-%d").build());
+    MinionEventObservers.init(_config, _executorService);
   }
 
   private void setupHelixSystemProperties() {
@@ -217,7 +226,8 @@ public abstract class BaseMinionStarter implements ServiceStartable {
     }
 
     // initialize authentication
-    minionContext.setTaskAuthToken(_config.getProperty(CommonConstants.Minion.CONFIG_OF_TASK_AUTH_TOKEN));
+    minionContext.setTaskAuthProvider(
+        AuthProviderUtils.extractAuthProvider(_config, CommonConstants.Minion.CONFIG_TASK_AUTH_NAMESPACE));
 
     // Start all components
     LOGGER.info("Initializing PinotFSFactory");
@@ -329,6 +339,7 @@ public abstract class BaseMinionStarter implements ServiceStartable {
     boolean updated = HelixHelper.updateHostnamePort(instanceConfig, _hostname, _port);
     updated |= HelixHelper.addDefaultTags(instanceConfig,
         () -> Collections.singletonList(CommonConstants.Helix.UNTAGGED_MINION_INSTANCE));
+    updated |= HelixHelper.removeDisabledPartitions(instanceConfig);
     if (updated) {
       HelixHelper.updateInstanceConfig(_helixManager, instanceConfig);
     }
@@ -352,6 +363,8 @@ public abstract class BaseMinionStarter implements ServiceStartable {
     _helixManager.disconnect();
     LOGGER.info("Deregistering service status handler");
     ServiceStatus.removeServiceStatusCallback(_instanceId);
+    LOGGER.info("Shutting down executor service");
+    _executorService.shutdownNow();
     LOGGER.info("Clean up Minion data directory");
     try {
       FileUtils.cleanDirectory(MinionContext.getInstance().getDataDir());

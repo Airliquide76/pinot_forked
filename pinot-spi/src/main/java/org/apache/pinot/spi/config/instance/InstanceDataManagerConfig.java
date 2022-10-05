@@ -58,4 +58,12 @@ public interface InstanceDataManagerConfig {
   String getSegmentDirectoryLoader();
 
   long getErrorCacheSize();
+
+  boolean isStreamSegmentDownloadUntar();
+
+  long getStreamSegmentDownloadUntarRateLimit();
+
+  int getDeletedSegmentsCacheSize();
+
+  int getDeletedSegmentsCacheTtlMinutes();
 }

@@ -31,13 +31,14 @@ import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.apache.pinot.common.config.GrpcConfig;
 import org.apache.pinot.common.config.TlsConfig;
+import org.apache.pinot.common.datatable.DataTable;
 import org.apache.pinot.common.metrics.ServerMeter;
 import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.proto.PinotQueryServerGrpc;
 import org.apache.pinot.common.proto.Server.ServerRequest;
 import org.apache.pinot.common.proto.Server.ServerResponse;
-import org.apache.pinot.common.utils.DataTable;
 import org.apache.pinot.common.utils.TlsUtils;
 import org.apache.pinot.core.operator.streaming.StreamingResponseUtils;
 import org.apache.pinot.core.query.executor.QueryExecutor;
@@ -60,13 +61,15 @@ public class GrpcQueryServer extends PinotQueryServerGrpc.PinotQueryServerImplBa
       Executors.newFixedThreadPool(ResourceManager.DEFAULT_QUERY_WORKER_THREADS);
   private final AccessControl _accessControl;
 
-  public GrpcQueryServer(int port, TlsConfig tlsConfig, QueryExecutor queryExecutor, ServerMetrics serverMetrics,
-      AccessControl accessControl) {
+  public GrpcQueryServer(int port, GrpcConfig config, TlsConfig tlsConfig, QueryExecutor queryExecutor,
+      ServerMetrics serverMetrics, AccessControl accessControl) {
     _queryExecutor = queryExecutor;
     _serverMetrics = serverMetrics;
     if (tlsConfig != null) {
       try {
-        _server = NettyServerBuilder.forPort(port).sslContext(buildGRpcSslContext(tlsConfig)).addService(this).build();
+        _server = NettyServerBuilder.forPort(port).sslContext(buildGRpcSslContext(tlsConfig))
+            .maxInboundMessageSize(config.getMaxInboundMessageSizeBytes())
+            .addService(this).build();
       } catch (Exception e) {
         throw new RuntimeException("Failed to start secure grpcQueryServer", e);
       }

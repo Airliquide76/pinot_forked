@@ -135,12 +135,13 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
         segmentMetadataFromDirectEndpoint.get("segment.total.docs"));
   }
 
+  // TODO: This test fails when using `llc` consumer mode. Needs investigation
   @Test
   public void testSegmentListApi()
       throws Exception {
     {
       String jsonOutputStr = sendGetRequest(
-          _controllerRequestURLBuilder.forSegmentListAPIWithTableType(getTableName(), TableType.OFFLINE.toString()));
+          _controllerRequestURLBuilder.forSegmentListAPI(getTableName(), TableType.OFFLINE.toString()));
       JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
       // There should be one element in the array
       JsonNode element = array.get(0);
@@ -149,7 +150,7 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
     }
     {
       String jsonOutputStr = sendGetRequest(
-          _controllerRequestURLBuilder.forSegmentListAPIWithTableType(getTableName(), TableType.REALTIME.toString()));
+          _controllerRequestURLBuilder.forSegmentListAPI(getTableName(), TableType.REALTIME.toString()));
       JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
       // There should be one element in the array
       JsonNode element = array.get(0);
@@ -210,6 +211,18 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
   }
 
   @Test
+  public void testQueryTracing()
+      throws Exception {
+    JsonNode jsonNode = postQuery("SET trace = true; SELECT COUNT(*) FROM " + getTableName());
+    Assert.assertEquals(jsonNode.get("resultTable").get("rows").get(0).get(0).asLong(), getCountStarResult());
+    Assert.assertTrue(jsonNode.get("exceptions").isEmpty());
+    JsonNode traceInfo = jsonNode.get("traceInfo");
+    Assert.assertEquals(traceInfo.size(), 2);
+    Assert.assertTrue(traceInfo.has("localhost_O"));
+    Assert.assertTrue(traceInfo.has("localhost_R"));
+  }
+
+  @Test
   @Override
   public void testHardcodedQueries()
       throws Exception {
@@ -225,9 +238,9 @@ public class HybridClusterIntegrationTest extends BaseClusterIntegrationTestSet 
 
   @Test
   @Override
-  public void testGeneratedQueriesWithMultiValues()
+  public void testGeneratedQueries()
       throws Exception {
-    super.testGeneratedQueriesWithMultiValues();
+    super.testGeneratedQueries();
   }
 
   @Test

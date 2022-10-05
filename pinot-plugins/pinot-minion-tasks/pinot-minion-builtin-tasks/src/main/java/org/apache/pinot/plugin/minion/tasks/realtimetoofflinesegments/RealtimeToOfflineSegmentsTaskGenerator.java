@@ -26,8 +26,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.task.TaskState;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.minion.RealtimeToOfflineSegmentsTaskMetadata;
 import org.apache.pinot.common.utils.LLCSegmentName;
@@ -57,7 +57,7 @@ import org.slf4j.LoggerFactory;
  *
  * Steps:
  *  - The watermarkMs is read from the {@link RealtimeToOfflineSegmentsTaskMetadata} ZNode
- *  found at MINION_TASK_METADATA/RealtimeToOfflineSegmentsTask/tableNameWithType
+ *  found at MINION_TASK_METADATA/${tableNameWithType}/RealtimeToOfflineSegmentsTask
  *  In case of cold-start, no ZNode will exist.
  *  A new ZNode will be created, with watermarkMs as the smallest time found in the COMPLETED segments
  *

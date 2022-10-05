@@ -26,8 +26,8 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.helix.HelixManager;
-import org.apache.helix.ZNRecord;
 import org.apache.helix.store.zk.ZkHelixPropertyStore;
+import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.restlet.resources.SegmentErrorInfo;
@@ -49,7 +49,7 @@ public interface TableDataManager {
    */
   void init(TableDataManagerConfig tableDataManagerConfig, String instanceId,
       ZkHelixPropertyStore<ZNRecord> propertyStore, ServerMetrics serverMetrics, HelixManager helixManager,
-      LoadingCache<Pair<String, String>, SegmentErrorInfo> errorCache, int maxParallelSegmentDownloads);
+      LoadingCache<Pair<String, String>, SegmentErrorInfo> errorCache, TableDataManagerParams tableDataManagerParams);
 
   /**
    * Starts the table data manager. Should be called only once after table data manager gets initialized but before
@@ -124,6 +124,11 @@ public interface TableDataManager {
   void removeSegment(String segmentName);
 
   /**
+   * Returns true if the segment was deleted in the last few minutes.
+   */
+  boolean isSegmentDeletedRecently(String segmentName);
+
+  /**
    * Acquires all segments of the table.
    * <p>It is the caller's responsibility to return the segments by calling {@link #releaseSegment(SegmentDataManager)}.
    *
@@ -134,6 +139,8 @@ public interface TableDataManager {
   /**
    * Acquires the segments with the given segment names.
    * <p>It is the caller's responsibility to return the segments by calling {@link #releaseSegment(SegmentDataManager)}.
+   * This method may return some recently deleted segments in missingSegments. The caller can identify those segments
+   * by using {@link #isSegmentDeletedRecently(String)}.
    *
    * @param segmentNames List of names of the segment to acquire
    * @param missingSegments Holder for segments unable to be acquired

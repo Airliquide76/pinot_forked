@@ -158,16 +158,16 @@ public final class IngestionUtils {
         if (timeColumnName != null) {
           DateTimeFieldSpec dateTimeFieldSpec = schema.getSpecForTimeColumn(timeColumnName);
           if (dateTimeFieldSpec != null) {
-            dateTimeFormatSpec = new DateTimeFormatSpec(dateTimeFieldSpec.getFormat());
+            dateTimeFormatSpec = dateTimeFieldSpec.getFormatSpec();
           }
         }
         return new NormalizedDateSegmentNameGenerator(rawTableName, batchConfig.getSegmentNamePrefix(),
             batchConfig.isExcludeSequenceId(), pushType, pushFrequency, dateTimeFormatSpec,
-            batchConfig.getSegmentNamePostfix());
+            batchConfig.getSegmentNamePostfix(), batchConfig.isAppendUUIDToSegmentName());
 
       case BatchConfigProperties.SegmentNameGeneratorType.SIMPLE:
-        return new SimpleSegmentNameGenerator(rawTableName, batchConfig.getSegmentNamePostfix());
-
+        return new SimpleSegmentNameGenerator(rawTableName, batchConfig.getSegmentNamePostfix(),
+            batchConfig.isAppendUUIDToSegmentName());
       default:
         throw new IllegalStateException(String
             .format("Unsupported segmentNameGeneratorType: %s for table: %s", segmentNameGeneratorType,

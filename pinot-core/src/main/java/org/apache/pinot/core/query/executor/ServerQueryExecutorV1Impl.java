@@ -21,16 +21,21 @@ package org.apache.pinot.core.query.executor;
 import com.google.common.base.Preconditions;
 import io.grpc.stub.StreamObserver;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.commons.configuration.ConfigurationException;
 import org.apache.commons.lang.StringUtils;
+import org.apache.pinot.common.datatable.DataTable;
+import org.apache.pinot.common.datatable.DataTable.MetadataKey;
 import org.apache.pinot.common.exception.QueryException;
 import org.apache.pinot.common.function.TransformFunctionType;
 import org.apache.pinot.common.metrics.ServerMeter;
@@ -41,14 +46,15 @@ import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.request.context.FilterContext;
 import org.apache.pinot.common.request.context.FunctionContext;
 import org.apache.pinot.common.utils.DataSchema;
-import org.apache.pinot.common.utils.DataTable;
-import org.apache.pinot.common.utils.DataTable.MetadataKey;
 import org.apache.pinot.core.common.ExplainPlanRowData;
 import org.apache.pinot.core.common.ExplainPlanRows;
+import org.apache.pinot.core.common.ObjectSerDeUtils;
 import org.apache.pinot.core.common.Operator;
 import org.apache.pinot.core.common.datatable.DataTableBuilder;
-import org.apache.pinot.core.common.datatable.DataTableUtils;
+import org.apache.pinot.core.common.datatable.DataTableBuilderFactory;
+import org.apache.pinot.core.common.datatable.DataTableBuilderUtils;
 import org.apache.pinot.core.data.manager.InstanceDataManager;
+import org.apache.pinot.core.data.manager.realtime.RealtimeTableDataManager;
 import org.apache.pinot.core.operator.filter.EmptyFilterOperator;
 import org.apache.pinot.core.operator.filter.MatchAllFilterOperator;
 import org.apache.pinot.core.plan.Plan;
@@ -57,23 +63,26 @@ import org.apache.pinot.core.plan.maker.PlanMaker;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
 import org.apache.pinot.core.query.config.QueryExecutorConfig;
 import org.apache.pinot.core.query.pruner.SegmentPrunerService;
+import org.apache.pinot.core.query.pruner.SegmentPrunerStatistics;
 import org.apache.pinot.core.query.request.ServerQueryRequest;
 import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.core.query.request.context.TimerContext;
 import org.apache.pinot.core.query.request.context.utils.QueryContextConverterUtils;
-import org.apache.pinot.core.query.utils.idset.IdSet;
 import org.apache.pinot.core.util.QueryOptionsUtils;
 import org.apache.pinot.core.util.trace.TraceContext;
 import org.apache.pinot.segment.local.data.manager.SegmentDataManager;
 import org.apache.pinot.segment.local.data.manager.TableDataManager;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
+import org.apache.pinot.segment.spi.ImmutableSegment;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.segment.spi.MutableSegment;
 import org.apache.pinot.segment.spi.SegmentMetadata;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.exception.BadQueryRequestException;
+import org.apache.pinot.spi.exception.QueryCancelledException;
 import org.apache.pinot.spi.trace.Tracing;
 import org.apache.pinot.spi.utils.CommonConstants;
+import org.joda.time.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -168,7 +177,7 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
       String errorMessage =
           String.format("Query scheduling took %dms (longer than query timeout of %dms) on server: %s",
               querySchedulingTimeMs, queryTimeoutMs, _instanceDataManager.getInstanceId());
-      DataTable dataTable = DataTableBuilder.getEmptyDataTable();
+      DataTable dataTable = DataTableBuilderUtils.getEmptyDataTable();
       dataTable.addException(QueryException.getException(QueryException.QUERY_SCHEDULING_TIMEOUT_ERROR, errorMessage));
       LOGGER.error("{} while processing requestId: {}", errorMessage, requestId);
       return dataTable;
@@ -178,15 +187,16 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     if (tableDataManager == null) {
       String errorMessage = String.format("Failed to find table: %s on server: %s", tableNameWithType,
           _instanceDataManager.getInstanceId());
-      DataTable dataTable = DataTableBuilder.getEmptyDataTable();
+      DataTable dataTable = DataTableBuilderUtils.getEmptyDataTable();
       dataTable.addException(QueryException.getException(QueryException.SERVER_TABLE_MISSING_ERROR, errorMessage));
       LOGGER.error("{} while processing requestId: {}", errorMessage, requestId);
       return dataTable;
     }
 
     List<String> segmentsToQuery = queryRequest.getSegmentsToQuery();
-    List<String> missingSegments = new ArrayList<>();
-    List<SegmentDataManager> segmentDataManagers = tableDataManager.acquireSegments(segmentsToQuery, missingSegments);
+    List<String> notAcquiredSegments = new ArrayList<>();
+    List<SegmentDataManager> segmentDataManagers =
+        tableDataManager.acquireSegments(segmentsToQuery, notAcquiredSegments);
     int numSegmentsAcquired = segmentDataManagers.size();
     List<IndexSegment> indexSegments = new ArrayList<>(numSegmentsAcquired);
     for (SegmentDataManager segmentDataManager : segmentDataManagers) {
@@ -194,20 +204,42 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     }
 
     // Gather stats for realtime consuming segments
-    int numConsumingSegments = 0;
-    long minIndexTimeMs = Long.MAX_VALUE;
-    long minIngestionTimeMs = Long.MAX_VALUE;
-    for (IndexSegment indexSegment : indexSegments) {
-      if (indexSegment instanceof MutableSegment) {
-        numConsumingSegments += 1;
-        SegmentMetadata segmentMetadata = indexSegment.getSegmentMetadata();
-        long indexTimeMs = segmentMetadata.getLastIndexedTimestamp();
-        if (indexTimeMs != Long.MIN_VALUE && indexTimeMs < minIndexTimeMs) {
-          minIndexTimeMs = indexTimeMs;
-        }
-        long ingestionTimeMs = segmentMetadata.getLatestIngestionTimestamp();
-        if (ingestionTimeMs != Long.MIN_VALUE && ingestionTimeMs < minIngestionTimeMs) {
-          minIngestionTimeMs = ingestionTimeMs;
+    int numConsumingSegmentsQueried = 0;
+    int numOnlineSegments = 0;
+    long minIndexTimeMs = 0;
+    long minIngestionTimeMs = 0;
+    long maxEndTimeMs = 0;
+    if (tableDataManager instanceof RealtimeTableDataManager) {
+      numConsumingSegmentsQueried = 0;
+      numOnlineSegments = 0;
+      minIndexTimeMs = Long.MAX_VALUE;
+      minIngestionTimeMs = Long.MAX_VALUE;
+      maxEndTimeMs = Long.MIN_VALUE;
+      for (IndexSegment indexSegment : indexSegments) {
+        if (indexSegment instanceof MutableSegment) {
+          numConsumingSegmentsQueried += 1;
+          SegmentMetadata segmentMetadata = indexSegment.getSegmentMetadata();
+          long indexTimeMs = segmentMetadata.getLastIndexedTimestamp();
+          if (indexTimeMs != Long.MIN_VALUE && indexTimeMs < minIndexTimeMs) {
+            minIndexTimeMs = indexTimeMs;
+          }
+          long ingestionTimeMs = segmentMetadata.getLatestIngestionTimestamp();
+          if (ingestionTimeMs != Long.MIN_VALUE && ingestionTimeMs < minIngestionTimeMs) {
+            minIngestionTimeMs = ingestionTimeMs;
+          }
+        } else if (indexSegment instanceof ImmutableSegment) {
+          SegmentMetadata segmentMetadata = indexSegment.getSegmentMetadata();
+          long indexCreationTime = segmentMetadata.getIndexCreationTime();
+          numOnlineSegments++;
+          if (indexCreationTime != Long.MIN_VALUE) {
+            maxEndTimeMs = Math.max(maxEndTimeMs, indexCreationTime);
+          } else {
+            // NOTE: the endTime may be totally inaccurate based on the value added in the timeColumn
+            Interval timeInterval = segmentMetadata.getTimeInterval();
+            if (timeInterval != null) {
+              maxEndTimeMs = Math.max(maxEndTimeMs, timeInterval.getEndMillis());
+            }
+          }
         }
       }
     }
@@ -218,16 +250,26 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
           queryRequest.isEnableStreaming());
     } catch (Exception e) {
       _serverMetrics.addMeteredTableValue(tableNameWithType, ServerMeter.QUERY_EXECUTION_EXCEPTIONS, 1);
-
-      // Do not log error for BadQueryRequestException because it's caused by bad query
+      dataTable = DataTableBuilderUtils.getEmptyDataTable();
+      // Do not log verbose error for BadQueryRequestException and QueryCancelledException.
       if (e instanceof BadQueryRequestException) {
         LOGGER.info("Caught BadQueryRequestException while processing requestId: {}, {}", requestId, e.getMessage());
+        dataTable.addException(QueryException.getException(QueryException.QUERY_EXECUTION_ERROR, e));
+      } else if (e instanceof QueryCancelledException) {
+        if (LOGGER.isDebugEnabled()) {
+          LOGGER.debug("Cancelled while processing requestId: {}", requestId, e);
+        } else {
+          LOGGER.info("Cancelled while processing requestId: {}, {}", requestId, e.getMessage());
+        }
+        // NOTE most likely the onFailure() callback registered on query future in InstanceRequestHandler would
+        // return the error table to broker sooner than here. But in case of race condition, we construct the error
+        // table here too.
+        dataTable.addException(QueryException.getException(QueryException.QUERY_CANCELLATION_ERROR,
+            "Query cancelled on: " + _instanceDataManager.getInstanceId()));
       } else {
         LOGGER.error("Exception processing requestId {}", requestId, e);
+        dataTable.addException(QueryException.getException(QueryException.QUERY_EXECUTION_ERROR, e));
       }
-
-      dataTable = DataTableBuilder.getEmptyDataTable();
-      dataTable.addException(QueryException.getException(QueryException.QUERY_EXECUTION_ERROR, e));
     } finally {
       for (SegmentDataManager segmentDataManager : segmentDataManagers) {
         tableDataManager.releaseSegment(segmentDataManager);
@@ -253,20 +295,34 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     //
     // After step 2 but before step 4, segment will be missing on server side
     // TODO: Change broker to watch both IdealState and ExternalView to not query the removed segments
-    int numMissingSegments = missingSegments.size();
-    if (numMissingSegments != 0) {
-      dataTable.addException(QueryException.getException(QueryException.SERVER_SEGMENT_MISSING_ERROR,
-          String.format("%d segments %s missing on server: %s", numMissingSegments, missingSegments,
-              _instanceDataManager.getInstanceId())));
-      _serverMetrics.addMeteredTableValue(tableNameWithType, ServerMeter.NUM_MISSING_SEGMENTS, numMissingSegments);
+    if (notAcquiredSegments.size() > 0) {
+      List<String> missingSegments =
+          notAcquiredSegments.stream().filter(segmentName -> !tableDataManager.isSegmentDeletedRecently(segmentName))
+              .collect(Collectors.toList());
+      int numMissingSegments = missingSegments.size();
+      if (numMissingSegments > 0) {
+        dataTable.addException(QueryException.getException(QueryException.SERVER_SEGMENT_MISSING_ERROR,
+            String.format("%d segments %s missing on server: %s", numMissingSegments, missingSegments,
+                _instanceDataManager.getInstanceId())));
+        _serverMetrics.addMeteredTableValue(tableNameWithType, ServerMeter.NUM_MISSING_SEGMENTS, numMissingSegments);
+      }
     }
 
-    if (numConsumingSegments > 0) {
-      long minConsumingFreshnessTimeMs = minIngestionTimeMs != Long.MAX_VALUE ? minIngestionTimeMs : minIndexTimeMs;
-      LOGGER.debug("Request {} queried {} consuming segments with minConsumingFreshnessTimeMs: {}", requestId,
-          numConsumingSegments, minConsumingFreshnessTimeMs);
-      metadata.put(MetadataKey.NUM_CONSUMING_SEGMENTS_PROCESSED.getName(), Integer.toString(numConsumingSegments));
-      metadata.put(MetadataKey.MIN_CONSUMING_FRESHNESS_TIME_MS.getName(), Long.toString(minConsumingFreshnessTimeMs));
+    if (tableDataManager instanceof RealtimeTableDataManager) {
+      long minConsumingFreshnessTimeMs = Long.MAX_VALUE;
+      if (numConsumingSegmentsQueried > 0) {
+        minConsumingFreshnessTimeMs = minIngestionTimeMs != Long.MAX_VALUE ? minIngestionTimeMs : minIndexTimeMs;
+        metadata.put(MetadataKey.NUM_CONSUMING_SEGMENTS_QUERIED.getName(),
+            Integer.toString(numConsumingSegmentsQueried));
+        metadata.put(MetadataKey.MIN_CONSUMING_FRESHNESS_TIME_MS.getName(), Long.toString(minConsumingFreshnessTimeMs));
+        LOGGER.debug("Request {} queried {} consuming segments with minConsumingFreshnessTimeMs: {}", requestId,
+            numConsumingSegmentsQueried, minConsumingFreshnessTimeMs);
+      } else if (numConsumingSegmentsQueried == 0 && maxEndTimeMs != Long.MIN_VALUE) {
+        minConsumingFreshnessTimeMs = maxEndTimeMs;
+        metadata.put(MetadataKey.MIN_CONSUMING_FRESHNESS_TIME_MS.getName(), Long.toString(maxEndTimeMs));
+        LOGGER.debug("Request {} queried {} consuming segments with minConsumingFreshnessTimeMs: {}", requestId,
+            numConsumingSegmentsQueried, minConsumingFreshnessTimeMs);
+      }
     }
 
     LOGGER.debug("Query processing time for request Id - {}: {}", requestId, queryProcessingTime);
@@ -274,6 +330,7 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     return dataTable;
   }
 
+  // NOTE: This method might change indexSegments. Do not use it after calling this method.
   private DataTable processQuery(List<IndexSegment> indexSegments, QueryContext queryContext, TimerContext timerContext,
       ExecutorService executorService, @Nullable StreamObserver<Server.ServerResponse> responseObserver,
       boolean enableStreaming)
@@ -288,7 +345,8 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
 
     TimerContext.Timer segmentPruneTimer = timerContext.startNewPhaseTimer(ServerQueryPhase.SEGMENT_PRUNING);
     int totalSegments = indexSegments.size();
-    List<IndexSegment> selectedSegments = _segmentPrunerService.prune(indexSegments, queryContext);
+    SegmentPrunerStatistics prunerStats = new SegmentPrunerStatistics();
+    List<IndexSegment> selectedSegments = _segmentPrunerService.prune(indexSegments, queryContext, prunerStats);
     segmentPruneTimer.stopAndRecord();
     int numSelectedSegments = selectedSegments.size();
     LOGGER.debug("Matched {} segments after pruning", numSelectedSegments);
@@ -298,7 +356,7 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
       if (queryContext.isExplain()) {
         dataTable = getExplainPlanResultsForNoMatchingSegment(totalSegments);
       } else {
-        dataTable = DataTableUtils.buildEmptyDataTable(queryContext);
+        dataTable = DataTableBuilderUtils.buildEmptyDataTable(queryContext);
       }
 
       Map<String, String> metadata = dataTable.getMetadata();
@@ -308,25 +366,31 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
       metadata.put(MetadataKey.NUM_ENTRIES_SCANNED_POST_FILTER.getName(), "0");
       metadata.put(MetadataKey.NUM_SEGMENTS_PROCESSED.getName(), "0");
       metadata.put(MetadataKey.NUM_SEGMENTS_MATCHED.getName(), "0");
+      metadata.put(MetadataKey.NUM_CONSUMING_SEGMENTS_PROCESSED.getName(), "0");
+      metadata.put(MetadataKey.NUM_CONSUMING_SEGMENTS_MATCHED.getName(), "0");
       metadata.put(MetadataKey.NUM_SEGMENTS_PRUNED_BY_SERVER.getName(), String.valueOf(totalSegments));
+      addPrunerStats(metadata, prunerStats);
       return dataTable;
     } else {
       TimerContext.Timer planBuildTimer = timerContext.startNewPhaseTimer(ServerQueryPhase.BUILD_QUERY_PLAN);
       Plan queryPlan =
           enableStreaming ? _planMaker.makeStreamingInstancePlan(selectedSegments, queryContext, executorService,
-              responseObserver) : _planMaker.makeInstancePlan(selectedSegments, queryContext, executorService);
+              responseObserver, _serverMetrics)
+              : _planMaker.makeInstancePlan(selectedSegments, queryContext, executorService, _serverMetrics);
       planBuildTimer.stopAndRecord();
 
       TimerContext.Timer planExecTimer = timerContext.startNewPhaseTimer(ServerQueryPhase.QUERY_PLAN_EXECUTION);
       DataTable dataTable = queryContext.isExplain() ? processExplainPlanQueries(queryPlan) : queryPlan.execute();
       planExecTimer.stopAndRecord();
 
+      Map<String, String> metadata = dataTable.getMetadata();
       // Update the total docs in the metadata based on the un-pruned segments
-      dataTable.getMetadata().put(MetadataKey.TOTAL_DOCS.getName(), Long.toString(numTotalDocs));
+      metadata.put(MetadataKey.TOTAL_DOCS.getName(), Long.toString(numTotalDocs));
 
       // Set the number of pruned segments. This count does not include the segments which returned empty filters
       int prunedSegments = totalSegments - numSelectedSegments;
-      dataTable.getMetadata().put(MetadataKey.NUM_SEGMENTS_PRUNED_BY_SERVER.getName(), String.valueOf(prunedSegments));
+      metadata.put(MetadataKey.NUM_SEGMENTS_PRUNED_BY_SERVER.getName(), String.valueOf(prunedSegments));
+      addPrunerStats(metadata, prunerStats);
 
       return dataTable;
     }
@@ -334,11 +398,10 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
 
   /** @return EXPLAIN_PLAN query result {@link DataTable} when no segments get selected for query execution.*/
   private static DataTable getExplainPlanResultsForNoMatchingSegment(int totalNumSegments) {
-    DataTableBuilder dataTableBuilder = new DataTableBuilder(DataSchema.EXPLAIN_RESULT_SCHEMA);
+    DataTableBuilder dataTableBuilder = DataTableBuilderFactory.getDataTableBuilder(DataSchema.EXPLAIN_RESULT_SCHEMA);
     try {
       dataTableBuilder.startRow();
-      dataTableBuilder.setColumn(0, String.format(ExplainPlanRows.PLAN_START_FORMAT,
-          totalNumSegments));
+      dataTableBuilder.setColumn(0, String.format(ExplainPlanRows.PLAN_START_FORMAT, totalNumSegments));
       dataTableBuilder.setColumn(1, ExplainPlanRows.PLAN_START_IDS);
       dataTableBuilder.setColumn(2, ExplainPlanRows.PLAN_START_IDS);
       dataTableBuilder.finishRow();
@@ -440,7 +503,7 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
 
   /** @return EXPLAIN PLAN query result {@link DataTable}. */
   public static DataTable processExplainPlanQueries(Plan queryPlan) {
-    DataTableBuilder dataTableBuilder = new DataTableBuilder(DataSchema.EXPLAIN_RESULT_SCHEMA);
+    DataTableBuilder dataTableBuilder = DataTableBuilderFactory.getDataTableBuilder(DataSchema.EXPLAIN_RESULT_SCHEMA);
     List<Operator> childOperators = queryPlan.getPlanNode().run().getChildOperators();
     assert childOperators.size() == 1;
     Operator root = childOperators.get(0);
@@ -459,14 +522,13 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
 
       // Walk through all the explain plans and create the entries in the explain plan output for each plan
       for (ExplainPlanRows explainPlanRows : listOfExplainPlans) {
-        numEmptyFilterSegments += explainPlanRows.isHasEmptyFilter()
-            ? explainPlanRows.getNumSegmentsMatchingThisPlan() : 0;
-        numMatchAllFilterSegments += explainPlanRows.isHasMatchAllFilter()
-            ? explainPlanRows.getNumSegmentsMatchingThisPlan() : 0;
+        numEmptyFilterSegments +=
+            explainPlanRows.isHasEmptyFilter() ? explainPlanRows.getNumSegmentsMatchingThisPlan() : 0;
+        numMatchAllFilterSegments +=
+            explainPlanRows.isHasMatchAllFilter() ? explainPlanRows.getNumSegmentsMatchingThisPlan() : 0;
         setValueInDataTableBuilder(dataTableBuilder,
-            String.format(ExplainPlanRows.PLAN_START_FORMAT,
-                explainPlanRows.getNumSegmentsMatchingThisPlan()), ExplainPlanRows.PLAN_START_IDS,
-            ExplainPlanRows.PLAN_START_IDS);
+            String.format(ExplainPlanRows.PLAN_START_FORMAT, explainPlanRows.getNumSegmentsMatchingThisPlan()),
+            ExplainPlanRows.PLAN_START_IDS, ExplainPlanRows.PLAN_START_IDS);
         for (ExplainPlanRowData explainPlanRowData : explainPlanRows.getExplainPlanRowData()) {
           setValueInDataTableBuilder(dataTableBuilder, explainPlanRowData.getExplainPlanString(),
               explainPlanRowData.getOperatorId(), explainPlanRowData.getParentId());
@@ -477,8 +539,8 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     }
 
     DataTable dataTable = dataTableBuilder.build();
-    dataTable.getMetadata().put(MetadataKey.EXPLAIN_PLAN_NUM_EMPTY_FILTER_SEGMENTS.getName(),
-        String.valueOf(numEmptyFilterSegments));
+    dataTable.getMetadata()
+        .put(MetadataKey.EXPLAIN_PLAN_NUM_EMPTY_FILTER_SEGMENTS.getName(), String.valueOf(numEmptyFilterSegments));
     dataTable.getMetadata().put(MetadataKey.EXPLAIN_PLAN_NUM_MATCH_ALL_FILTER_SEGMENTS.getName(),
         String.valueOf(numMatchAllFilterSegments));
     return dataTable;
@@ -546,25 +608,30 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
     }
     List<ExpressionContext> arguments = function.getArguments();
     if (StringUtils.remove(function.getFunctionName(), '_').equalsIgnoreCase(IN_PARTITIONED_SUBQUERY)) {
-      Preconditions.checkState(arguments.size() == 2,
+      Preconditions.checkArgument(arguments.size() == 2,
           "IN_PARTITIONED_SUBQUERY requires 2 arguments: expression, subquery");
       ExpressionContext subqueryExpression = arguments.get(1);
-      Preconditions.checkState(subqueryExpression.getType() == ExpressionContext.Type.LITERAL,
+      Preconditions.checkArgument(subqueryExpression.getType() == ExpressionContext.Type.LITERAL,
           "Second argument of IN_PARTITIONED_SUBQUERY must be a literal (subquery)");
       QueryContext subquery = QueryContextConverterUtils.getQueryContext(subqueryExpression.getLiteral());
       // Subquery should be an ID_SET aggregation only query
       //noinspection rawtypes
       AggregationFunction[] aggregationFunctions = subquery.getAggregationFunctions();
-      Preconditions.checkState(aggregationFunctions != null && aggregationFunctions.length == 1
+      Preconditions.checkArgument(aggregationFunctions != null && aggregationFunctions.length == 1
               && aggregationFunctions[0].getType() == AggregationFunctionType.IDSET
               && subquery.getGroupByExpressions() == null,
           "Subquery in IN_PARTITIONED_SUBQUERY should be an ID_SET aggregation only query, found: %s",
           subqueryExpression.getLiteral());
       // Execute the subquery
       subquery.setEndTimeMs(endTimeMs);
-      DataTable dataTable = processQuery(indexSegments, subquery, timerContext, executorService, null, false);
-      IdSet idSet = dataTable.getObject(0, 0);
-      String serializedIdSet = idSet.toBase64String();
+      // Make a clone of indexSegments because the method might modify the list
+      DataTable dataTable =
+          processQuery(new ArrayList<>(indexSegments), subquery, timerContext, executorService, null, false);
+      DataTable.CustomObject idSet = dataTable.getCustomObject(0, 0);
+      Preconditions.checkState(idSet != null && idSet.getType() == ObjectSerDeUtils.ObjectType.IdSet.getValue(),
+          "Result is not an IdSet");
+      String serializedIdSet =
+          new String(Base64.getEncoder().encode(idSet.getBuffer()).array(), StandardCharsets.ISO_8859_1);
       // Rewrite the expression
       function.setFunctionName(TransformFunctionType.INIDSET.name());
       arguments.set(1, ExpressionContext.forLiteral(serializedIdSet));
@@ -573,5 +640,11 @@ public class ServerQueryExecutorV1Impl implements QueryExecutor {
         handleSubquery(argument, indexSegments, timerContext, executorService, endTimeMs);
       }
     }
+  }
+
+  private void addPrunerStats(Map<String, String> metadata, SegmentPrunerStatistics prunerStats) {
+    metadata.put(MetadataKey.NUM_SEGMENTS_PRUNED_INVALID.getName(), String.valueOf(prunerStats.getInvalidSegments()));
+    metadata.put(MetadataKey.NUM_SEGMENTS_PRUNED_BY_LIMIT.getName(), String.valueOf(prunerStats.getLimitPruned()));
+    metadata.put(MetadataKey.NUM_SEGMENTS_PRUNED_BY_VALUE.getName(), String.valueOf(prunerStats.getValuePruned()));
   }
 }

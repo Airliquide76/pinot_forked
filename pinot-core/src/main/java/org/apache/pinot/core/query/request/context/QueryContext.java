@@ -39,6 +39,7 @@ import org.apache.pinot.core.plan.maker.InstancePlanMakerImplV2;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunctionFactory;
 import org.apache.pinot.core.util.MemoizedClassAssociation;
+import org.apache.pinot.core.util.QueryOptionsUtils;
 
 
 /**
@@ -117,6 +118,10 @@ public class QueryContext {
   private int _minServerGroupTrimSize = InstancePlanMakerImplV2.DEFAULT_MIN_SERVER_GROUP_TRIM_SIZE;
   // Trim threshold to use for server combine for SQL GROUP BY
   private int _groupTrimThreshold = InstancePlanMakerImplV2.DEFAULT_GROUPBY_TRIM_THRESHOLD;
+  // Whether null handling is enabled
+  private boolean _nullHandlingEnabled;
+  // Whether server returns the final result
+  private boolean _serverReturnFinalResult;
 
   private QueryContext(@Nullable String tableName, @Nullable QueryContext subquery,
       List<ExpressionContext> selectExpressions, List<String> aliasList, @Nullable FilterContext filter,
@@ -372,6 +377,22 @@ public class QueryContext {
     _groupTrimThreshold = groupTrimThreshold;
   }
 
+  public boolean isNullHandlingEnabled() {
+    return _nullHandlingEnabled;
+  }
+
+  public void setNullHandlingEnabled(boolean nullHandlingEnabled) {
+    _nullHandlingEnabled = nullHandlingEnabled;
+  }
+
+  public boolean isServerReturnFinalResult() {
+    return _serverReturnFinalResult;
+  }
+
+  public void setServerReturnFinalResult(boolean serverReturnFinalResult) {
+    _serverReturnFinalResult = serverReturnFinalResult;
+  }
+
   /**
    * Gets or computes a value of type {@code V} associated with a key of type {@code K} so that it can be shared
    * within the scope of a query.
@@ -488,6 +509,8 @@ public class QueryContext {
       QueryContext queryContext =
           new QueryContext(_tableName, _subquery, _selectExpressions, _aliasList, _filter, _groupByExpressions,
               _havingFilter, _orderByExpressions, _limit, _offset, _queryOptions, _expressionOverrideHints, _explain);
+      queryContext.setNullHandlingEnabled(QueryOptionsUtils.isNullHandlingEnabled(_queryOptions));
+      queryContext.setServerReturnFinalResult(QueryOptionsUtils.isServerReturnFinalResult(_queryOptions));
 
       // Pre-calculate the aggregation functions and columns for the query
       generateAggregationFunctions(queryContext);

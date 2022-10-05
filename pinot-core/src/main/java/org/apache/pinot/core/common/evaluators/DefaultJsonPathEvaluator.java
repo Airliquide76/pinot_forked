@@ -42,8 +42,8 @@ import org.apache.pinot.spi.utils.JsonUtils;
 public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
 
   // This ObjectMapper requires special configurations, hence we can't use pinot JsonUtils here.
-  private static final ObjectMapper OBJECT_MAPPER_WITH_BIG_DECIMAL = new ObjectMapper()
-      .configure(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS, true);
+  private static final ObjectMapper OBJECT_MAPPER_WITH_BIG_DECIMAL =
+      new ObjectMapper().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
 
   private static final ParseContext JSON_PARSER_CONTEXT = JsonPath.using(
       new Configuration.ConfigurationBuilder().jsonProvider(new JacksonJsonProvider())
@@ -90,8 +90,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processValue(i, extractFromString(reader, context, docIds[i]), defaultValue, valueBuffer);
@@ -123,8 +122,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processValue(i, extractFromString(reader, context, docIds[i]), defaultValue, valueBuffer);
@@ -156,8 +154,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processValue(i, extractFromString(reader, context, docIds[i]), defaultValue, valueBuffer);
@@ -189,8 +186,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processValue(i, extractFromString(reader, context, docIds[i]), defaultValue, valueBuffer);
@@ -223,8 +219,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processValue(i, extractFromStringWithExactBigDecimal(reader, context, docIds[i]), defaultValue,
@@ -256,8 +251,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processValue(i, extractFromString(reader, context, docIds[i]), valueBuffer);
@@ -288,8 +282,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processList(i, extractFromString(reader, context, docIds[i]), valueBuffer);
@@ -320,8 +313,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processList(i, extractFromString(reader, context, docIds[i]), valueBuffer);
@@ -352,8 +344,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processList(i, extractFromString(reader, context, docIds[i]), valueBuffer);
@@ -384,8 +375,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processList(i, extractFromString(reader, context, docIds[i]), valueBuffer);
@@ -416,8 +406,7 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
         }
       }
     } else {
-      switch (reader.getValueType()) {
-        case JSON:
+      switch (reader.getStoredType()) {
         case STRING:
           for (int i = 0; i < length; i++) {
             processList(i, extractFromString(reader, context, docIds[i]), valueBuffer);
@@ -434,40 +423,80 @@ public final class DefaultJsonPathEvaluator implements JsonPathEvaluator {
     }
   }
 
+  @Nullable
   private <T> T extractFromBytes(Dictionary dictionary, int dictId) {
-    return JSON_PARSER_CONTEXT.parseUtf8(dictionary.getBytesValue(dictId)).read(_jsonPath);
+    try {
+      return JSON_PARSER_CONTEXT.parseUtf8(dictionary.getBytesValue(dictId)).read(_jsonPath);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
+  @Nullable
   private <T, R extends ForwardIndexReaderContext> T extractFromBytes(ForwardIndexReader<R> reader, R context,
       int docId) {
-    return JSON_PARSER_CONTEXT.parseUtf8(reader.getBytes(docId, context)).read(_jsonPath);
+    try {
+      return JSON_PARSER_CONTEXT.parseUtf8(reader.getBytes(docId, context)).read(_jsonPath);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
+  @Nullable
   private <T> T extractFromBytesWithExactBigDecimal(Dictionary dictionary, int dictId) {
-    return JSON_PARSER_CONTEXT_WITH_BIG_DECIMAL.parseUtf8(dictionary.getBytesValue(dictId)).read(_jsonPath);
+    try {
+      return JSON_PARSER_CONTEXT_WITH_BIG_DECIMAL.parseUtf8(dictionary.getBytesValue(dictId)).read(_jsonPath);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
+  @Nullable
   private <R extends ForwardIndexReaderContext> BigDecimal extractFromBytesWithExactBigDecimal(
       ForwardIndexReader<R> reader, R context, int docId) {
-    return JSON_PARSER_CONTEXT_WITH_BIG_DECIMAL.parseUtf8(reader.getBytes(docId, context)).read(_jsonPath);
+    try {
+      return JSON_PARSER_CONTEXT_WITH_BIG_DECIMAL.parseUtf8(reader.getBytes(docId, context)).read(_jsonPath);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
+  @Nullable
   private <T> T extractFromString(Dictionary dictionary, int dictId) {
-    return JSON_PARSER_CONTEXT.parse(dictionary.getStringValue(dictId)).read(_jsonPath);
+    try {
+      return JSON_PARSER_CONTEXT.parse(dictionary.getStringValue(dictId)).read(_jsonPath);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
+  @Nullable
   private <T, R extends ForwardIndexReaderContext> T extractFromString(ForwardIndexReader<R> reader, R context,
       int docId) {
-    return JSON_PARSER_CONTEXT.parseUtf8(reader.getBytes(docId, context)).read(_jsonPath);
+    try {
+      return JSON_PARSER_CONTEXT.parseUtf8(reader.getBytes(docId, context)).read(_jsonPath);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
+  @Nullable
   private <T> T extractFromStringWithExactBigDecimal(Dictionary dictionary, int dictId) {
-    return JSON_PARSER_CONTEXT_WITH_BIG_DECIMAL.parse(dictionary.getStringValue(dictId)).read(_jsonPath);
+    try {
+      return JSON_PARSER_CONTEXT_WITH_BIG_DECIMAL.parse(dictionary.getStringValue(dictId)).read(_jsonPath);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
+  @Nullable
   private <R extends ForwardIndexReaderContext> BigDecimal extractFromStringWithExactBigDecimal(
       ForwardIndexReader<R> reader, R context, int docId) {
-    return JSON_PARSER_CONTEXT_WITH_BIG_DECIMAL.parseUtf8(reader.getBytes(docId, context)).read(_jsonPath);
+    try {
+      return JSON_PARSER_CONTEXT_WITH_BIG_DECIMAL.parseUtf8(reader.getBytes(docId, context)).read(_jsonPath);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
   private void processValue(int index, Object value, int defaultValue, int[] valueBuffer) {

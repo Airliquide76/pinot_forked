@@ -30,17 +30,18 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.collections.MapUtils;
+import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.proto.Server;
 import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.request.context.FilterContext;
 import org.apache.pinot.common.request.context.OrderByExpressionContext;
 import org.apache.pinot.common.request.context.predicate.Predicate;
 import org.apache.pinot.core.plan.AcquireReleaseColumnsSegmentPlanNode;
-import org.apache.pinot.core.plan.AggregationGroupByOrderByPlanNode;
 import org.apache.pinot.core.plan.AggregationPlanNode;
 import org.apache.pinot.core.plan.CombinePlanNode;
 import org.apache.pinot.core.plan.DistinctPlanNode;
 import org.apache.pinot.core.plan.GlobalPlanImplV0;
+import org.apache.pinot.core.plan.GroupByPlanNode;
 import org.apache.pinot.core.plan.InstanceResponsePlanNode;
 import org.apache.pinot.core.plan.Plan;
 import org.apache.pinot.core.plan.PlanNode;
@@ -150,7 +151,7 @@ public class InstancePlanMakerImplV2 implements PlanMaker {
 
   @Override
   public Plan makeInstancePlan(List<IndexSegment> indexSegments, QueryContext queryContext,
-      ExecutorService executorService) {
+      ExecutorService executorService, ServerMetrics serverMetrics) {
     applyQueryOptions(queryContext);
 
     int numSegments = indexSegments.size();
@@ -181,7 +182,8 @@ public class InstancePlanMakerImplV2 implements PlanMaker {
     }
 
     CombinePlanNode combinePlanNode = new CombinePlanNode(planNodes, queryContext, executorService, null);
-    return new GlobalPlanImplV0(new InstanceResponsePlanNode(combinePlanNode, indexSegments, fetchContexts));
+    return new GlobalPlanImplV0(
+        new InstanceResponsePlanNode(combinePlanNode, indexSegments, fetchContexts, queryContext));
   }
 
   private void applyQueryOptions(QueryContext queryContext) {
@@ -243,10 +245,10 @@ public class InstancePlanMakerImplV2 implements PlanMaker {
     if (QueryContextUtils.isAggregationQuery(queryContext)) {
       List<ExpressionContext> groupByExpressions = queryContext.getGroupByExpressions();
       if (groupByExpressions != null) {
-        // Aggregation group-by query
-        return new AggregationGroupByOrderByPlanNode(indexSegment, queryContext);
+        // Group-by query
+        return new GroupByPlanNode(indexSegment, queryContext);
       } else {
-        // Aggregation only query
+        // Aggregation query
         return new AggregationPlanNode(indexSegment, queryContext);
       }
     } else if (QueryContextUtils.isSelectionQuery(queryContext)) {
@@ -259,7 +261,8 @@ public class InstancePlanMakerImplV2 implements PlanMaker {
 
   @Override
   public Plan makeStreamingInstancePlan(List<IndexSegment> indexSegments, QueryContext queryContext,
-      ExecutorService executorService, StreamObserver<Server.ServerResponse> streamObserver) {
+      ExecutorService executorService, StreamObserver<Server.ServerResponse> streamObserver,
+      ServerMetrics serverMetrics) {
     applyQueryOptions(queryContext);
 
     List<PlanNode> planNodes = new ArrayList<>(indexSegments.size());
@@ -270,12 +273,12 @@ public class InstancePlanMakerImplV2 implements PlanMaker {
     if (QueryContextUtils.isSelectionOnlyQuery(queryContext)) {
       // selection-only is streamed in StreamingSelectionPlanNode --> here only metadata block is returned.
       return new GlobalPlanImplV0(
-          new InstanceResponsePlanNode(combinePlanNode, indexSegments, Collections.emptyList()));
+          new InstanceResponsePlanNode(combinePlanNode, indexSegments, Collections.emptyList(), queryContext));
     } else {
       // non-selection-only requires a StreamingInstanceResponsePlanNode to stream data block back and metadata block
       // as final return.
       return new GlobalPlanImplV0(
-          new StreamingInstanceResponsePlanNode(combinePlanNode, indexSegments, Collections.emptyList(),
+          new StreamingInstanceResponsePlanNode(combinePlanNode, indexSegments, Collections.emptyList(), queryContext,
               streamObserver));
     }
   }

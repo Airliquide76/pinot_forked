@@ -22,6 +22,7 @@ import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
@@ -55,8 +56,6 @@ import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pinot.spi.config.table.ingestion.ComplexTypeConfig;
 import org.apache.pinot.spi.data.DateTimeFieldSpec;
-import org.apache.pinot.spi.data.DateTimeFormatSpec;
-import org.apache.pinot.spi.data.DateTimeGranularitySpec;
 import org.apache.pinot.spi.data.DimensionFieldSpec;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
@@ -81,6 +80,9 @@ public class JsonUtils {
   public static final ObjectReader DEFAULT_READER = DEFAULT_MAPPER.reader();
   public static final ObjectWriter DEFAULT_WRITER = DEFAULT_MAPPER.writer();
   public static final ObjectWriter DEFAULT_PRETTY_WRITER = DEFAULT_MAPPER.writerWithDefaultPrettyPrinter();
+  public static final ObjectReader READER_WITH_BIG_DECIMAL =
+      new ObjectMapper().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).reader();
+
   public static final TypeReference<HashMap<String, Object>> MAP_TYPE_REFERENCE =
       new TypeReference<HashMap<String, Object>>() {
       };
@@ -145,6 +147,11 @@ public class JsonUtils {
     return DEFAULT_READER.readTree(jsonString);
   }
 
+  public static JsonNode stringToJsonNodeWithBigDecimal(String jsonString)
+      throws IOException {
+    return READER_WITH_BIG_DECIMAL.readTree(jsonString);
+  }
+
   public static <T> T fileToObject(File jsonFile, Class<T> valueType)
       throws IOException {
     return DEFAULT_READER.forType(valueType).readValue(jsonFile);
@@ -170,8 +177,7 @@ public class JsonUtils {
   public static JsonNode fileToFirstJsonNode(File jsonFile)
       throws IOException {
     JsonFactory jf = new JsonFactory();
-    try (InputStream inputStream = new FileInputStream(jsonFile);
-        JsonParser jp = jf.createParser(inputStream)) {
+    try (InputStream inputStream = new FileInputStream(jsonFile); JsonParser jp = jf.createParser(inputStream)) {
       jp.setCodec(DEFAULT_MAPPER);
       jp.nextToken();
       if (jp.hasCurrentToken()) {
@@ -598,9 +604,11 @@ public class JsonUtils {
         case DATE_TIME:
           Preconditions.checkState(isSingleValueField, "Time field: %s cannot be multi-valued", name);
           Preconditions.checkNotNull(timeUnit, "Time unit cannot be null");
-          pinotSchema.addField(new DateTimeFieldSpec(name, dataType,
-              new DateTimeFormatSpec(1, timeUnit.toString(), DateTimeFieldSpec.TimeFormat.EPOCH.toString()).getFormat(),
-              new DateTimeGranularitySpec(1, timeUnit).getGranularity()));
+          // TODO: Switch to new format after releasing 0.11.0
+          //       "EPOCH|" + timeUnit.name()
+          String format = "1:" + timeUnit.name() + ":EPOCH";
+          String granularity = "1:" + timeUnit.name();
+          pinotSchema.addField(new DateTimeFieldSpec(name, dataType, format, granularity));
           break;
         default:
           throw new UnsupportedOperationException("Unsupported field type: " + fieldType + " for field: " + name);

@@ -28,7 +28,9 @@ import java.util.List;
 import java.util.Map;
 import org.apache.pinot.common.tier.TierFactory;
 import org.apache.pinot.spi.config.table.CompletionConfig;
+import org.apache.pinot.spi.config.table.DedupConfig;
 import org.apache.pinot.spi.config.table.FieldConfig;
+import org.apache.pinot.spi.config.table.HashFunction;
 import org.apache.pinot.spi.config.table.QueryConfig;
 import org.apache.pinot.spi.config.table.QuotaConfig;
 import org.apache.pinot.spi.config.table.ReplicaGroupStrategyConfig;
@@ -248,14 +250,19 @@ public class TableConfigSerDeTest {
     }
     {
       // with upsert config
-      UpsertConfig upsertConfig =
-          new UpsertConfig(UpsertConfig.Mode.FULL, null, null, "comparison", UpsertConfig.HashFunction.NONE);
-
-      TableConfig tableConfig = tableConfigBuilder.setUpsertConfig(upsertConfig).build();
+      TableConfig tableConfig = tableConfigBuilder.setUpsertConfig(new UpsertConfig(UpsertConfig.Mode.FULL)).build();
 
       // Serialize then de-serialize
       checkTableConfigWithUpsertConfig(JsonUtils.stringToObject(tableConfig.toJsonString(), TableConfig.class));
       checkTableConfigWithUpsertConfig(TableConfigUtils.fromZNRecord(TableConfigUtils.toZNRecord(tableConfig)));
+    }
+    {
+      // with dedup config
+      DedupConfig dedupConfig = new DedupConfig(true, HashFunction.MD5);
+      TableConfig tableConfig = tableConfigBuilder.setDedupConfig(dedupConfig).build();
+      // Serialize then de-serialize
+      checkTableConfigWithDedupConfig(JsonUtils.stringToObject(tableConfig.toJsonString(), TableConfig.class));
+      checkTableConfigWithDedupConfig(TableConfigUtils.fromZNRecord(TableConfigUtils.toZNRecord(tableConfig)));
     }
     {
       // with SegmentsValidationAndRetentionConfig
@@ -358,6 +365,7 @@ public class TableConfigSerDeTest {
     assertNull(tableConfig.getRoutingConfig());
     assertNull(tableConfig.getQueryConfig());
     assertNull(tableConfig.getInstanceAssignmentConfigMap());
+    assertNull(tableConfig.getSegmentAssignmentConfigMap());
     assertNull(tableConfig.getFieldConfigList());
 
     // Serialize
@@ -373,6 +381,7 @@ public class TableConfigSerDeTest {
     assertFalse(tableConfigJson.has(TableConfig.ROUTING_CONFIG_KEY));
     assertFalse(tableConfigJson.has(TableConfig.QUERY_CONFIG_KEY));
     assertFalse(tableConfigJson.has(TableConfig.INSTANCE_ASSIGNMENT_CONFIG_MAP_KEY));
+    assertFalse(tableConfigJson.has(TableConfig.SEGMENT_ASSIGNMENT_CONFIG_MAP_KEY));
     assertFalse(tableConfigJson.has(TableConfig.FIELD_CONFIG_LIST_KEY));
   }
 
@@ -541,5 +550,13 @@ public class TableConfigSerDeTest {
     assertNotNull(upsertConfig);
 
     assertEquals(upsertConfig.getMode(), UpsertConfig.Mode.FULL);
+  }
+
+  private void checkTableConfigWithDedupConfig(TableConfig tableConfig) {
+    DedupConfig dedupConfig = tableConfig.getDedupConfig();
+    assertNotNull(dedupConfig);
+
+    assertTrue(dedupConfig.isDedupEnabled());
+    assertEquals(dedupConfig.getHashFunction(), HashFunction.MD5);
   }
 }
