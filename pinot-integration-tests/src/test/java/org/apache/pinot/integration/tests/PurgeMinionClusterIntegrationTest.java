@@ -53,6 +53,7 @@ public class PurgeMinionClusterIntegrationTest extends BaseClusterIntegrationTes
   private static final String PURGE_FIRST_RUN_TABLE = "myTable1";
   private static final String PURGE_DELTA_PASSED_TABLE = "myTable2";
   private static final String PURGE_DELTA_NOT_PASSED_TABLE = "myTable3";
+  private static final String PURGE_REALTIME_TABLE = "realtime_1";
 
   protected PinotHelixTaskResourceManager _helixTaskResourceManager;
   protected PinotTaskManager _taskManager;
@@ -62,22 +63,28 @@ public class PurgeMinionClusterIntegrationTest extends BaseClusterIntegrationTes
   protected final File _segmentDir1 = new File(_tempDir, "segmentDir1");
   protected final File _segmentDir2 = new File(_tempDir, "segmentDir2");
   protected final File _segmentDir3 = new File(_tempDir, "segmentDir3");
+  protected final File _segmentDir4 = new File(_tempDir, "segmentDir4");
+
 
   protected final File _tarDir1 = new File(_tempDir, "tarDir1");
   protected final File _tarDir2 = new File(_tempDir, "tarDir2");
   protected final File _tarDir3 = new File(_tempDir, "tarDir3");
+  protected final File _tarDir4 = new File(_tempDir, "tarDir4");
+
 
   @BeforeClass
   public void setUp()
       throws Exception {
     TestUtils.ensureDirectoriesExistAndEmpty(_tempDir, _segmentDir1, _tarDir1,
-        _segmentDir2, _tarDir2, _segmentDir3, _tarDir3);
+        _segmentDir2, _tarDir2, _segmentDir3, _tarDir3, _segmentDir4, _tarDir4);
 
     // Start the Pinot cluster
     startZk();
     startController();
     startBrokers(1);
     startServers(1);
+    // Start Kafka
+    startKafka();
 
     // Create and upload the schema and table config
     Schema schema = createSchema();
@@ -88,17 +95,29 @@ public class PurgeMinionClusterIntegrationTest extends BaseClusterIntegrationTes
     setTableName(PURGE_FIRST_RUN_TABLE);
     TableConfig purgeTableConfig = createOfflineTableConfig();
     purgeTableConfig.setTaskConfig(getPurgeTaskConfig());
-
     setTableName(PURGE_DELTA_PASSED_TABLE);
     TableConfig purgeDeltaPassedTableConfig = createOfflineTableConfig();
     purgeDeltaPassedTableConfig.setTaskConfig(getPurgeTaskConfig());
+    // Unpack the Avro files
+    List<File> avroFiles = unpackAvroData(_tempDir);
+    setTableName(PURGE_REALTIME_TABLE);
+    TableConfig realtimeTableConfig = createRealtimeTableConfig(avroFiles.get(0));
+    realtimeTableConfig.setTaskConfig(getPurgeTaskConfig());
 
     addTableConfig(purgeTableConfig);
     addTableConfig(purgeDeltaPassedTableConfig);
     addTableConfig(purgeDeltaNotPassedTableConfig);
+    addTableConfig(realtimeTableConfig);
 
-    // Unpack the Avro files
-    List<File> avroFiles = unpackAvroData(_tempDir);
+
+
+
+
+
+
+
+
+
 
     // Create and upload segments
     ClusterIntegrationTestUtils
@@ -110,9 +129,24 @@ public class PurgeMinionClusterIntegrationTest extends BaseClusterIntegrationTes
         .buildSegmentsFromAvro(avroFiles, purgeDeltaNotPassedTableConfig,
             schema, 0, _segmentDir3, _tarDir3);
 
+   /* ClusterIntegrationTestUtils
+        .buildSegmentsFromAvro(avroFiles, realtimeTableConfig,
+            schema, 0, _segmentDir4, _tarDir4);*/
+
     uploadSegments(PURGE_FIRST_RUN_TABLE, _tarDir1);
     uploadSegments(PURGE_DELTA_PASSED_TABLE, _tarDir2);
     uploadSegments(PURGE_DELTA_NOT_PASSED_TABLE, _tarDir3);
+
+
+
+      // Push data into Kafka
+    pushAvroIntoKafka(avroFiles);
+
+    // create segments and upload them to controller
+    createSegmentsAndUpload(avroFiles, schema, realtimeTableConfig);
+
+    // Wait for all documents loaded
+    waitForAllDocsLoaded(600_000L);
 
     // Initialize the query generator
     setUpQueryGenerator(avroFiles);
@@ -125,6 +159,7 @@ public class PurgeMinionClusterIntegrationTest extends BaseClusterIntegrationTes
     //set up metadata on segment to check how code handle passed and not passed delay
     String tablenameOfflineNotPassed = TableNameBuilder.OFFLINE.tableNameWithType(PURGE_DELTA_NOT_PASSED_TABLE);
     String tablenameOfflinePassed = TableNameBuilder.OFFLINE.tableNameWithType(PURGE_DELTA_PASSED_TABLE);
+    String tablenameRealTime = TableNameBuilder.REALTIME.tableNameWithType(PURGE_REALTIME_TABLE);
 
     //set up passed delay
     List<SegmentZKMetadata> segmentsZKMetadataDeltaPassed = _pinotHelixResourceManager
@@ -138,6 +173,21 @@ public class PurgeMinionClusterIntegrationTest extends BaseClusterIntegrationTes
       segmentZKMetadata.setCustomMap(customSegmentMetadataPassed);
       _pinotHelixResourceManager.updateZkMetadata(tablenameOfflinePassed, segmentZKMetadata);
     }
+
+    //set up passed delayREALTIME
+    List<SegmentZKMetadata> segmentsREALTIMEZKMetadataDeltaPassed = _pinotHelixResourceManager
+        .getSegmentsZKMetadata(tablenameRealTime);
+
+    Map<String, String> customSegmentREALTIMEMetadataPassed = new HashMap<>();
+    customSegmentREALTIMEMetadataPassed.put(MinionConstants.PurgeTask.TASK_TYPE
+        + MinionConstants.TASK_TIME_SUFFIX, String.valueOf(System.currentTimeMillis() - 88400000));
+
+    for (SegmentZKMetadata segmentZKMetadata : segmentsREALTIMEZKMetadataDeltaPassed) {
+      segmentZKMetadata.setCustomMap(customSegmentREALTIMEMetadataPassed);
+      _pinotHelixResourceManager.updateZkMetadata(tablenameRealTime, segmentZKMetadata);
+    }
+
+
     //set up not passed delay
     List<SegmentZKMetadata> segmentsZKMetadataDeltaNotPassed = _pinotHelixResourceManager
         .getSegmentsZKMetadata(tablenameOfflineNotPassed);
@@ -150,11 +200,15 @@ public class PurgeMinionClusterIntegrationTest extends BaseClusterIntegrationTes
     }
   }
 
+  protected void createSegmentsAndUpload(List<File> avroFile, Schema schema, TableConfig tableConfig)
+      throws Exception {
+    // Do nothing. This is specific to LLC use cases for now.
+  }
   private void setRecordPurger() {
     MinionContext minionContext = MinionContext.getInstance();
     minionContext.setRecordPurgerFactory(rawTableName -> {
       List<String> tableNames = Arrays.asList(PURGE_FIRST_RUN_TABLE,
-          PURGE_DELTA_PASSED_TABLE, PURGE_DELTA_NOT_PASSED_TABLE);
+          PURGE_DELTA_PASSED_TABLE, PURGE_DELTA_NOT_PASSED_TABLE, PURGE_REALTIME_TABLE);
       if (tableNames.contains(rawTableName)) {
         return row -> row.getValue("Quarter").equals(1);
       } else {
@@ -275,6 +329,60 @@ public class PurgeMinionClusterIntegrationTest extends BaseClusterIntegrationTes
     // Check if the task metadata is cleaned up on table deletion
     verifyTableDelete(offlineTableName);
   }
+
+
+
+
+  /**
+   * Test purge with passed delay
+   */
+  @Test
+  public void testREALTIMEPassedDelayTimePurge()
+      throws Exception {
+    // Expected purge task generation :
+    // 1. The purge time on this test is greater than the threshold expected (863660000 > 1d (86400000) )
+    // 2. Check that we cannot run on same time two purge generation ensuring running segment will be skipped
+    // 3. Check segment metadata to ensure purgeTime is updated into the metadata
+    // 4. Check after the first run of the purge if we rerun a purge task generation no task should be scheduled
+    // 5. Check the purge process itself by setting an expecting number of row
+
+    String realtimeTableName = TableNameBuilder.REALTIME.tableNameWithType(PURGE_REALTIME_TABLE);
+    _taskManager.scheduleTasks(realtimeTableName).get(MinionConstants.PurgeTask.TASK_TYPE);
+    assertTrue(_helixTaskResourceManager.getTaskQueues()
+        .contains(PinotHelixTaskResourceManager.getHelixJobQueueName(MinionConstants.PurgeTask.TASK_TYPE)));
+    // Will not schedule task if there's incomplete task
+    assertNull(
+        _taskManager.scheduleTasks(realtimeTableName).get(MinionConstants.PurgeTask.TASK_TYPE));
+    waitForTaskToComplete();
+    // check that metadata contains expected values
+    for (SegmentZKMetadata metadata : _pinotHelixResourceManager.getSegmentsZKMetadata(realtimeTableName)) {
+      // Check purgeTimeIn
+      assertTrue(metadata.getCustomMap().containsKey(MinionConstants.PurgeTask.TASK_TYPE
+          + MinionConstants.TASK_TIME_SUFFIX));
+      //check that the purge have been run on these segments
+      //assertTrue(System.currentTimeMillis() - Long.parseLong(metadata.getCustomMap()
+      //    .get(MinionConstants.PurgeTask.TASK_TYPE + MinionConstants.TASK_TIME_SUFFIX)) < 86400000);
+    }
+    // should not reload a new purge as the last time purge is not greater than last + 1day (default purge delay)
+    assertNull(
+        _taskManager.scheduleTasks(realtimeTableName).get(MinionConstants.PurgeTask.TASK_TYPE));
+
+    // 28057 Rows with quarter = 1
+    // 115545 Totals Rows
+    // Expecting 87488 to the final time
+    String sqlQuery = "SELECT count(*) FROM " + PURGE_REALTIME_TABLE;
+    JsonNode actualJson = postQuery(sqlQuery, _brokerBaseApiUrl);
+
+    assertTrue(actualJson.toString().contains("\"rows\":[[87488]]"),
+        "Expected results to contain: \"rows\":[[87488]] but found: " + actualJson);
+
+    // Drop the table
+    dropRealtimeTable(PURGE_REALTIME_TABLE);
+
+    // Check if the task metadata is cleaned up on table deletion
+    verifyTableDelete(realtimeTableName);
+  }
+
 
   /**
    * Test purge with not passed delay
